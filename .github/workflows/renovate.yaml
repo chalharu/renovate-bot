@@ -25,3 +25,4 @@ jobs:
         RENOVATE_USERNAME: "renovate-chalharu[bot]"
         RENOVATE_GIT_AUTHOR: "Self-hosted Renovate Bot <renovate-chalharu[bot]@users.noreply.github.com>"
         RENOVATE_ONBOARDING: "false"
+        LOG_LEVEL: warn
