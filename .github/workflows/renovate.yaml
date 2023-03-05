@@ -1,0 +1,28 @@
+name: Renovate
+on:
+  workflow_dispatch:
+  schedule:
+  - cron: '0/5 * * * *'
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Get token
+      id: get_token
+      uses: tibdex/github-app-token@v1.8.0
+      with:
+        private_key: ${{ secrets.PRIVATE_KEY }}
+        app_id: ${{ secrets.APP_ID }}
+
+    - name: Checkout
+      uses: actions/checkout@v3.3.0
+
+    - name: Self-hosted Renovate
+      uses: renovatebot/github-action@v34.156.0
+      with:
+        token: '${{ steps.get_token.outputs.token }}'
+      env:
+        RENOVATE_AUTODISCOVER: "true"
+        RENOVATE_USERNAME: "renovate-chalharu[bot]"
+        RENOVATE_GIT_AUTHOR: "Self-hosted Renovate Bot <renovate-chalharu[bot]@users.noreply.github.com>"
+        RENOVATE_ONBOARDING: "false"
