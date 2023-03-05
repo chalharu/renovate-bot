@@ -8,6 +8,7 @@
   "enabledManagers": [
     "github-actions"
   ],
+  "ignoreTests": true,
   "packageRules" : [
     {
       "matchPackageNames": ["renovatebot/github-action"],
