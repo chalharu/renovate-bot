@@ -12,7 +12,7 @@
   "packageRules" : [
     {
       "matchPackageNames": ["renovatebot/github-action"],
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      // "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
       "automerge": true
     }
   ]
