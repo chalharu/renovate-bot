@@ -2,6 +2,7 @@ name: Renovate
 on:
   schedule:
   - cron: '* * * * *'
+concurrency: renovate
 jobs:
   renovate:
     runs-on: ubuntu-latest
