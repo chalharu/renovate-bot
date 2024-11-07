@@ -20,7 +20,6 @@ jobs:
         token: '${{ steps.get_token.outputs.token }}'
       env:
         RENOVATE_AUTODISCOVER: "true"
-        RENOVATE_USERNAME: "renovate-chalharu[bot]"
         RENOVATE_ONBOARDING: "false"
         RENOVATE_PLATFORM_COMMIT: 'true'
         LOG_LEVEL: warn
