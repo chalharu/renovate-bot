@@ -11,7 +11,7 @@
   "ignoreTests": true,
   "packageRules" : [
     {
-      "matchPackageNames": ["renovatebot/github-action", "tibdex/github-app-token"],
+      "matchPackageNames": ["renovatebot/github-action", "actions/create-github-app-token"],
       // "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
       "automerge": true
     }
