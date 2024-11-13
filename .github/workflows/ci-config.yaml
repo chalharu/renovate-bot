@@ -4,15 +4,11 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'renovate.json'
-      - 'renovate.json5'
-      - '.github/renovate.json'
-      - '.github/renovate.json5'
-      - '.gitlab/renovate.json'
-      - '.gitlab/renovate.json5'
+      - 'renovate.json5?'
+      - '.github/renovate.json5?'
+      - '.gitlab/renovate.json5?'
       - '.renovaterc'
-      - '.renovaterc.json'
-      - '.renovaterc.json5'
+      - '.renovaterc.json5?'
       - 'package.json'
 
 jobs:
