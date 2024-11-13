@@ -1,6 +1,7 @@
 name: Renovate config CI
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - 'renovate.json'
@@ -16,13 +17,4 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4.2.2
-    - name: Use Node.js
-      uses: actions/setup-node@v4.1.0
-      with:
-        node-version: lts/*
-        check-latest: true
-    - name: renovate test
-      run: npx --yes --package renovate -- renovate-config-validator --strict
+    uses: chalharu/workflows/.github/workflows/renovate-ci.yaml@main
