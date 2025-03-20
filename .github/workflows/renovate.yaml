@@ -10,7 +10,7 @@ jobs:
     steps:
     - name: Get token
       id: get_token
-      uses: actions/create-github-app-token@v1.11.6
+      uses: actions/create-github-app-token@v1.11.7
       with:
         private-key: ${{ secrets.PRIVATE_KEY }}
         app-id: ${{ secrets.APP_ID }}
