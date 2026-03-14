@@ -5,8 +5,12 @@ on:
   - cron: '*/5 * * * *'
 concurrency: renovate
 jobs:
-  renovate:
+  enumerate_repositories:
+    name: Enumerate accessible repositories
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list_repositories.outputs.matrix }}
+      repository_count: ${{ steps.list_repositories.outputs.repository_count }}
     steps:
     - name: Get token
       id: get_token
@@ -16,12 +20,54 @@ jobs:
         app-id: ${{ secrets.APP_ID }}
         owner: ${{ github.repository_owner }}
 
+    - name: List accessible repositories
+      id: list_repositories
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ steps.get_token.outputs.token }}
+        script: |
+          const repositories = await github.paginate(
+            "GET /installation/repositories",
+            { per_page: 100 },
+            (response) => response.data.repositories
+              .filter((repository) => repository.owner.login === context.repo.owner)
+              .map((repository) => ({
+                owner: repository.owner.login,
+                repository: repository.name,
+                full_name: repository.full_name,
+              })),
+          );
+          const uniqueRepositories = [...new Map(
+            repositories.map((repository) => [repository.full_name, repository]),
+          ).values()].sort((left, right) => left.full_name.localeCompare(right.full_name));
+          core.setOutput("matrix", JSON.stringify({ include: uniqueRepositories }));
+          core.setOutput("repository_count", String(uniqueRepositories.length));
+
+  renovate:
+    name: Self-hosted Renovate (${{ matrix.full_name }})
+    needs: enumerate_repositories
+    if: ${{ needs.enumerate_repositories.outputs.repository_count != '0' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.enumerate_repositories.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Get token
+      id: get_token
+      uses: actions/create-github-app-token@v3.0.0
+      with:
+        private-key: ${{ secrets.PRIVATE_KEY }}
+        app-id: ${{ secrets.APP_ID }}
+        owner: ${{ matrix.owner }}
+        repositories: ${{ matrix.repository }}
+
     - name: Self-hosted Renovate
       uses: renovatebot/github-action@0b17c4eb901eca44d018fb25744a50a74b2042df # v46.1.4
       with:
         token: '${{ steps.get_token.outputs.token }}'
       env:
-        RENOVATE_AUTODISCOVER: "true"
+        RENOVATE_AUTODISCOVER: "false"
+        RENOVATE_REPOSITORIES: ${{ matrix.full_name }}
         RENOVATE_ONBOARDING: "false"
         RENOVATE_PLATFORM_COMMIT: "true"
         RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
