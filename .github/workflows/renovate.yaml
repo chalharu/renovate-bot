@@ -2,7 +2,7 @@ name: Renovate
 on:
   workflow_dispatch:
   schedule:
-  - cron: '* * * * *'
+  - cron: '*/5 * * * *'
 concurrency: renovate
 jobs:
   renovate:
@@ -24,4 +24,5 @@ jobs:
         RENOVATE_AUTODISCOVER: "true"
         RENOVATE_ONBOARDING: "false"
         RENOVATE_PLATFORM_COMMIT: "true"
+        RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
         LOG_LEVEL: warn
