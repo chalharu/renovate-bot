@@ -26,19 +26,17 @@ jobs:
       with:
         github-token: ${{ steps.get_token.outputs.token }}
         script: |
-          const repositories = await github.paginate(
-            "GET /installation/repositories",
-            { per_page: 100 },
-            (response) => response.data.repositories
+          const repositories = await github.paginate("GET /installation/repositories", {
+            per_page: 100,
+          });
+          const uniqueRepositories = [...new Map(
+            repositories
               .filter((repository) => repository.owner.login === context.repo.owner)
-              .map((repository) => ({
+              .map((repository) => [repository.full_name, {
                 owner: repository.owner.login,
                 repository: repository.name,
                 full_name: repository.full_name,
-              })),
-          );
-          const uniqueRepositories = [...new Map(
-            repositories.map((repository) => [repository.full_name, repository]),
+              }]),
           ).values()].sort((left, right) => left.full_name.localeCompare(right.full_name));
           core.setOutput("matrix", JSON.stringify({ include: uniqueRepositories }));
           core.setOutput("repository_count", String(uniqueRepositories.length));
