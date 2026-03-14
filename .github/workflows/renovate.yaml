@@ -172,7 +172,7 @@ jobs:
       id: upload_warmed_image
       if: ${{ always() && steps.list_repositories.outputs.repository_count != '0' && steps.resolve_warmed_image.outputs.image_available == 'true' }}
       continue-on-error: true
-      uses: actions/upload-artifact@v4.6.2
+      uses: actions/upload-artifact@v7.0.0
       with:
         name: renovate-image
         path: ${{ env.IMAGE_ARCHIVE_PATH }}
@@ -207,7 +207,7 @@ jobs:
       id: download_warmed_image
       if: ${{ needs.enumerate_repositories.outputs.warmed_image_available == 'true' }}
       continue-on-error: true
-      uses: actions/download-artifact@v4.3.0
+      uses: actions/download-artifact@v8.0.1
       with:
         name: renovate-image
         path: /tmp
