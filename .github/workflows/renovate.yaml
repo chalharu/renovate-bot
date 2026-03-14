@@ -4,9 +4,17 @@ on:
   schedule:
   - cron: '*/5 * * * *'
 concurrency: renovate
+env:
+  IMAGE_ARCHIVE_PATH: /tmp/renovate-image.tar
 jobs:
-  renovate:
+  enumerate_repositories:
+    name: Enumerate accessible repositories
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list_repositories.outputs.matrix }}
+      repository_count: ${{ steps.list_repositories.outputs.repository_count }}
+      warmup_repository: ${{ steps.list_repositories.outputs.warmup_repository }}
+      warmed_image_available: ${{ steps.finalize_warmed_image.outputs.image_available }}
     steps:
     - name: Get token
       id: get_token
@@ -16,12 +24,215 @@ jobs:
         app-id: ${{ secrets.APP_ID }}
         owner: ${{ github.repository_owner }}
 
+    - name: List accessible repositories
+      id: list_repositories
+      uses: actions/github-script@v7.1.0
+      with:
+        github-token: ${{ steps.get_token.outputs.token }}
+        script: |
+          const repositories = await github.paginate("GET /installation/repositories", {
+            per_page: 100,
+          });
+          const uniqueRepositories = [...new Map(
+            repositories
+              .filter((repository) => repository.owner.login === context.repo.owner)
+              .map((repository) => [repository.full_name, {
+                owner: repository.owner.login,
+                repository: repository.name,
+                full_name: repository.full_name,
+              }]),
+          ).values()].sort((left, right) => left.full_name.localeCompare(right.full_name));
+          const warmupRepository =
+            uniqueRepositories.find((repository) => repository.full_name === context.repo.owner + "/" + context.repo.repo)?.full_name ??
+            uniqueRepositories[0]?.full_name ??
+            "";
+          core.setOutput("matrix", JSON.stringify({ include: uniqueRepositories }));
+          core.setOutput("repository_count", String(uniqueRepositories.length));
+          core.setOutput("warmup_repository", warmupRepository);
+
+    - name: Warm Renovate image
+      if: ${{ steps.list_repositories.outputs.repository_count != '0' }}
+      continue-on-error: true
+      run: |
+        docker image ls --format '{{.Repository}}:{{.Tag}}' | sed '/^<none>:<none>$/d' | sort -u > /tmp/docker-image-refs-before.txt
+        docker events --filter type=image --filter event=pull --format '{{json .}}' > /tmp/docker-pull-events.jsonl &
+        echo "$!" > /tmp/docker-pull-events.pid
+
+    - name: Warm Renovate image with dry-run
+      if: ${{ steps.list_repositories.outputs.repository_count != '0' }}
+      continue-on-error: true
+      uses: renovatebot/github-action@0b17c4eb901eca44d018fb25744a50a74b2042df # v46.1.4
+      with:
+        token: '${{ steps.get_token.outputs.token }}'
+      env:
+        RENOVATE_AUTODISCOVER: "false"
+        RENOVATE_DRY_RUN: "lookup"
+        RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
+        RENOVATE_ONBOARDING: "false"
+        RENOVATE_REPOSITORIES: ${{ steps.list_repositories.outputs.warmup_repository }}
+        LOG_LEVEL: warn
+
+    - name: Resolve Renovate action defaults
+      if: ${{ always() && steps.list_repositories.outputs.repository_count != '0' }}
+      id: resolve_action_defaults
+      continue-on-error: true
+      uses: actions/github-script@v7.1.0
+      with:
+        script: |
+          const { data } = await github.rest.repos.getContent({
+            owner: "renovatebot",
+            repo: "github-action",
+            path: "action.yml",
+            ref: "0b17c4eb901eca44d018fb25744a50a74b2042df",
+          });
+          const content = Buffer.from(data.content, data.encoding).toString("utf8");
+          const image = content.match(/renovate-image:[\s\S]*?default: ([^\n]+)/)?.[1]?.trim();
+          const version = content.match(/renovate-version:[\s\S]*?default: ['"]?([^'"\n]+)['"]?/)?.[1]?.trim();
+
+          if (!image || !version) {
+            core.setFailed("Unable to resolve Renovate action defaults");
+            return;
+          }
+
+          core.setOutput("image_ref", `${image}:${version}`);
+
+    - name: Stop Renovate image watcher
+      if: ${{ always() && steps.list_repositories.outputs.repository_count != '0' }}
+      run: |
+        if [ -f /tmp/docker-pull-events.pid ]; then
+          watcher_pid="$(cat /tmp/docker-pull-events.pid)"
+          kill "${watcher_pid}" 2>/dev/null || true
+          wait "${watcher_pid}" 2>/dev/null || true
+        fi
+
+    - name: Resolve warmed image
+      if: ${{ always() && steps.list_repositories.outputs.repository_count != '0' }}
+      id: resolve_warmed_image
+      continue-on-error: true
+      env:
+        FALLBACK_IMAGE_REF: ${{ steps.resolve_action_defaults.outputs.image_ref }}
+      run: |
+        docker image ls --format '{{.Repository}}:{{.Tag}}' | sed '/^<none>:<none>$/d' | sort -u > /tmp/docker-image-refs-after.txt
+        python <<'PY'
+        import json
+        import os
+        import subprocess
+        from pathlib import Path
+
+        image_ref = None
+        events_path = Path("/tmp/docker-pull-events.jsonl")
+        if events_path.exists():
+            for line in events_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                image_ref = event.get("Actor", {}).get("Attributes", {}).get("name") or image_ref
+
+        if image_ref is None:
+            image_ref = os.environ.get("FALLBACK_IMAGE_REF") or None
+            if image_ref is not None:
+                result = subprocess.run(
+                    ["docker", "image", "inspect", image_ref],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    image_ref = None
+
+        if image_ref is None:
+            before_path = Path("/tmp/docker-image-refs-before.txt")
+            after_path = Path("/tmp/docker-image-refs-after.txt")
+            before = set(before_path.read_text().splitlines()) if before_path.exists() else set()
+            after = set(after_path.read_text().splitlines()) if after_path.exists() else set()
+            new_refs = sorted(ref for ref in after - before if ref)
+            if new_refs:
+                image_ref = new_refs[0]
+
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            if image_ref is not None:
+                output.write(f"image_ref={image_ref}\n")
+                output.write("image_available=true\n")
+            else:
+                output.write("image_available=false\n")
+        PY
+
+    - name: Archive warmed image
+      id: archive_warmed_image
+      if: ${{ always() && steps.list_repositories.outputs.repository_count != '0' && steps.resolve_warmed_image.outputs.image_available == 'true' }}
+      continue-on-error: true
+      env:
+        IMAGE_REF: ${{ steps.resolve_warmed_image.outputs.image_ref }}
+      run: docker save --output "${IMAGE_ARCHIVE_PATH}" "${IMAGE_REF}"
+
+    - name: Upload Renovate image archive
+      id: upload_warmed_image
+      if: ${{ always() && steps.list_repositories.outputs.repository_count != '0' && steps.resolve_warmed_image.outputs.image_available == 'true' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@v4.6.2
+      with:
+        name: renovate-image
+        path: ${{ env.IMAGE_ARCHIVE_PATH }}
+        if-no-files-found: error
+        retention-days: 1
+        compression-level: 0
+
+    - name: Finalize warmed image availability
+      if: ${{ always() && steps.list_repositories.outputs.repository_count != '0' }}
+      id: finalize_warmed_image
+      env:
+        RESOLVED_IMAGE_AVAILABLE: ${{ steps.resolve_warmed_image.outputs.image_available }}
+        ARCHIVE_OUTCOME: ${{ steps.archive_warmed_image.outcome }}
+        UPLOAD_OUTCOME: ${{ steps.upload_warmed_image.outcome }}
+      run: |
+        if [ "${RESOLVED_IMAGE_AVAILABLE}" = "true" ] && [ "${ARCHIVE_OUTCOME}" = "success" ] && [ "${UPLOAD_OUTCOME}" = "success" ]; then
+          echo "image_available=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "image_available=false" >> "$GITHUB_OUTPUT"
+        fi
+
+  renovate:
+    name: Self-hosted Renovate (${{ matrix.full_name }})
+    needs: enumerate_repositories
+    if: ${{ needs.enumerate_repositories.outputs.repository_count != '0' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.enumerate_repositories.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download Renovate image archive
+      id: download_warmed_image
+      if: ${{ needs.enumerate_repositories.outputs.warmed_image_available == 'true' }}
+      continue-on-error: true
+      uses: actions/download-artifact@v4.3.0
+      with:
+        name: renovate-image
+        path: /tmp
+
+    - name: Load Renovate image
+      if: ${{ steps.download_warmed_image.outcome == 'success' }}
+      continue-on-error: true
+      run: docker load --input "${IMAGE_ARCHIVE_PATH}"
+
+    - name: Get token
+      id: get_token
+      uses: actions/create-github-app-token@v3.0.0
+      with:
+        private-key: ${{ secrets.PRIVATE_KEY }}
+        app-id: ${{ secrets.APP_ID }}
+        owner: ${{ matrix.owner }}
+        repositories: ${{ matrix.repository }}
+
     - name: Self-hosted Renovate
       uses: renovatebot/github-action@0b17c4eb901eca44d018fb25744a50a74b2042df # v46.1.4
       with:
         token: '${{ steps.get_token.outputs.token }}'
       env:
-        RENOVATE_AUTODISCOVER: "true"
+        RENOVATE_AUTODISCOVER: "false"
+        RENOVATE_REPOSITORIES: ${{ matrix.full_name }}
         RENOVATE_ONBOARDING: "false"
         RENOVATE_PLATFORM_COMMIT: "true"
         RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
