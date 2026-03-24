@@ -65,6 +65,7 @@ jobs:
       with:
         token: '${{ steps.get_token.outputs.token }}'
       env:
+        renovate-version: 43.83
         RENOVATE_AUTODISCOVER: "false"
         RENOVATE_DRY_RUN: "lookup"
         RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
@@ -229,6 +230,7 @@ jobs:
     - name: Self-hosted Renovate
       uses: renovatebot/github-action@0b17c4eb901eca44d018fb25744a50a74b2042df # v46.1.4
       with:
+        renovate-version: 43.83
         token: '${{ steps.get_token.outputs.token }}'
       env:
         RENOVATE_AUTODISCOVER: "false"
