@@ -61,7 +61,7 @@ jobs:
     - name: Warm Renovate image with dry-run
       if: ${{ steps.list_repositories.outputs.repository_count != '0' }}
       continue-on-error: true
-      uses: renovatebot/github-action@abd08c7549b2a864af5df4a2e369c43f035a6a9d # v46.1.5
+      uses: renovatebot/github-action@0b17c4eb901eca44d018fb25744a50a74b2042df # v46.1.4
       with:
         token: '${{ steps.get_token.outputs.token }}'
       env:
@@ -227,7 +227,7 @@ jobs:
         repositories: ${{ matrix.repository }}
 
     - name: Self-hosted Renovate
-      uses: renovatebot/github-action@abd08c7549b2a864af5df4a2e369c43f035a6a9d # v46.1.5
+      uses: renovatebot/github-action@0b17c4eb901eca44d018fb25744a50a74b2042df # v46.1.4
       with:
         token: '${{ steps.get_token.outputs.token }}'
       env:
