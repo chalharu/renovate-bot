@@ -2,5 +2,20 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "github>chalharu/renovate-config"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update renovate-version in the Renovate workflow",
+      "managerFilePatterns": [
+        "/(^|/)\\.github/workflows/renovate\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "(?:^|\\n)\\s+renovate-version:\\s*['\"]?(?<currentValue>[^\\s'\"]+)['\"]?\\s*(?:\\n|$)"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/renovatebot/renovate",
+      "versioningTemplate": "docker"
+    }
   ]
 }
