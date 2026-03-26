@@ -1,0 +1,329 @@
+name: Renovate merge gate
+
+on:
+  workflow_dispatch:
+  schedule:
+  - cron: '*/5 * * * *'
+
+concurrency: renovate-merge-gate
+
+jobs:
+  manage_gate:
+    name: manage gate
+    runs-on: ubuntu-latest
+    steps:
+    - name: Get token
+      id: get_token
+      uses: actions/create-github-app-token@v3.0.0
+      with:
+        private-key: ${{ secrets.PRIVATE_KEY }}
+        app-id: ${{ secrets.APP_ID }}
+        owner: ${{ github.repository_owner }}
+
+    - name: Manage Renovate pull requests
+      uses: actions/github-script@v8.0.0
+      with:
+        github-token: ${{ steps.get_token.outputs.token }}
+        script: |
+          const WAIT_CHECK_NAME = "Renovate wait period";
+          const WAIT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+          const SUPPORTED_CONFIG_PATHS = [
+            "renovate.json",
+            "renovate.json5",
+            ".github/renovate.json",
+            ".github/renovate.json5",
+            ".gitlab/renovate.json",
+            ".gitlab/renovate.json5",
+            ".renovaterc",
+            ".renovaterc.json",
+            ".renovaterc.json5",
+          ];
+          const SUCCESSFUL_CHECK_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
+          const SUCCESSFUL_STATUS_STATES = new Set(["SUCCESS"]);
+          const WAIT_LABELS = new Set(["security"]);
+          const failures = [];
+          const summary = {
+            repositories: 0,
+            renovatePullRequests: 0,
+            waitingPullRequests: 0,
+            mergedPullRequests: 0,
+            skippedPullRequests: 0,
+          };
+
+          const hasSupportedRenovateConfig = async (repository) => {
+            for (const path of SUPPORTED_CONFIG_PATHS) {
+              try {
+                await github.rest.repos.getContent({
+                  owner: repository.owner.login,
+                  repo: repository.name,
+                  path,
+                });
+                return true;
+              } catch (error) {
+                if (error.status === 404) {
+                  continue;
+                }
+
+                throw new Error(`Unable to determine repository eligibility (status: ${error.status ?? "unknown"})`);
+              }
+            }
+
+            return false;
+          };
+
+          const upsertWaitCheck = async ({ repository, headSha, isVulnerability, waitSatisfied, readyAt }) => {
+            const now = new Date().toISOString();
+            const payload = {
+              owner: repository.owner.login,
+              repo: repository.name,
+              name: WAIT_CHECK_NAME,
+              head_sha: headSha,
+              status: waitSatisfied ? "completed" : "in_progress",
+              started_at: now,
+              output: {
+                title: isVulnerability ? "Security update can merge after CI" : waitSatisfied ? "Wait period satisfied" : "Waiting for 3-day hold period",
+                summary: isVulnerability
+                  ? "This Renovate PR addresses a vulnerability and can merge as soon as the repository CI passes."
+                  : waitSatisfied
+                    ? "This Renovate PR has been open for at least three days and can merge as soon as the repository CI passes."
+                    : `This Renovate PR stays pending until ${readyAt}.`,
+              },
+            };
+
+            if (waitSatisfied) {
+              payload.conclusion = "success";
+              payload.completed_at = now;
+            }
+
+            const { data } = await github.rest.checks.listForRef({
+              owner: repository.owner.login,
+              repo: repository.name,
+              ref: headSha,
+              check_name: WAIT_CHECK_NAME,
+              filter: "latest",
+              per_page: 100,
+            });
+            const existing = data.check_runs.find((checkRun) => checkRun.name === WAIT_CHECK_NAME);
+
+            if (existing) {
+              await github.rest.checks.update({
+                owner: repository.owner.login,
+                repo: repository.name,
+                check_run_id: existing.id,
+                name: payload.name,
+                status: payload.status,
+                started_at: payload.started_at,
+                conclusion: payload.conclusion,
+                completed_at: payload.completed_at,
+                output: payload.output,
+              });
+              return;
+            }
+
+            await github.rest.checks.create(payload);
+          };
+
+          const evaluatePullRequestState = async ({ repository, pullRequestNumber }) => {
+            const result = await github.graphql(
+              `query($owner: String!, $repo: String!, $pullRequestNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $pullRequestNumber) {
+                    mergeable
+                    commits(last: 1) {
+                      nodes {
+                        commit {
+                          statusCheckRollup {
+                            contexts(first: 100) {
+                              nodes {
+                                __typename
+                                ... on CheckRun {
+                                  name
+                                  status
+                                  conclusion
+                                }
+                                ... on StatusContext {
+                                  context
+                                  state
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`,
+              {
+                owner: repository.owner.login,
+                repo: repository.name,
+                pullRequestNumber,
+              },
+            );
+
+            const pullRequest = result.repository.pullRequest;
+            const contexts = pullRequest.commits.nodes[0]?.commit.statusCheckRollup?.contexts?.nodes ?? [];
+            const relevantContexts = contexts.filter((node) => {
+              if (node.__typename === "CheckRun") {
+                return node.name !== WAIT_CHECK_NAME && node.name !== "manage gate";
+              }
+
+              return node.context !== WAIT_CHECK_NAME;
+            });
+
+            if (relevantContexts.length === 0) {
+              return {
+                ready: false,
+                reason: "No external CI checks found yet",
+              };
+            }
+
+            const failingContexts = relevantContexts.filter((node) => {
+              if (node.__typename === "CheckRun") {
+                return node.status !== "COMPLETED" || !SUCCESSFUL_CHECK_CONCLUSIONS.has((node.conclusion ?? "").toLowerCase());
+              }
+
+              return !SUCCESSFUL_STATUS_STATES.has(node.state);
+            });
+
+            if (failingContexts.length > 0) {
+              return {
+                ready: false,
+                reason: "Repository CI is not green yet",
+              };
+            }
+
+            if (pullRequest.mergeable !== "MERGEABLE") {
+              return {
+                ready: false,
+                reason: `Pull request is not mergeable yet (${pullRequest.mergeable})`,
+              };
+            }
+
+            return {
+              ready: true,
+              reason: "Ready to merge",
+            };
+          };
+
+          const repositories = await github.paginate("GET /installation/repositories", {
+            per_page: 100,
+          });
+          const uniqueRepositories = [...new Map(
+            repositories
+              .filter((repository) =>
+                repository.owner.login === context.repo.owner &&
+                !repository.archived &&
+                !repository.disabled,
+              )
+              .map((repository) => [repository.full_name, repository]),
+          ).values()];
+          const eligibleRepositories = [];
+
+          for (const repository of uniqueRepositories) {
+            if (!(await hasSupportedRenovateConfig(repository))) {
+              continue;
+            }
+
+            if (repository.private) {
+              core.setSecret(repository.full_name);
+              core.setSecret(repository.name);
+            }
+
+            eligibleRepositories.push(repository);
+          }
+
+          summary.repositories = eligibleRepositories.length;
+
+          for (const repository of eligibleRepositories) {
+            try {
+              const pullRequests = await github.paginate(github.rest.pulls.list, {
+                owner: repository.owner.login,
+                repo: repository.name,
+                state: "open",
+                per_page: 100,
+              });
+
+              for (const pullRequest of pullRequests) {
+                const isRenovatePullRequest =
+                  pullRequest.head.repo?.full_name === repository.full_name &&
+                  pullRequest.head.ref.startsWith("renovate/") &&
+                  (
+                    /^renovate.*\[bot\]$/.test(pullRequest.user.login) ||
+                    (pullRequest.body ?? "").includes("This PR has been generated by [Renovate Bot]")
+                  );
+
+                if (!isRenovatePullRequest) {
+                  continue;
+                }
+
+                summary.renovatePullRequests += 1;
+
+                const labelNames = pullRequest.labels
+                  .map((label) => typeof label === "string" ? label : label.name)
+                  .filter(Boolean);
+                const isVulnerability =
+                  labelNames.some((label) => WAIT_LABELS.has(label)) ||
+                  /\[SECURITY\]/.test(`${pullRequest.title}\n${pullRequest.body ?? ""}`);
+                const readyAtMs = new Date(pullRequest.created_at).getTime() + WAIT_WINDOW_MS;
+                const waitSatisfied = isVulnerability || Date.now() >= readyAtMs;
+
+                await upsertWaitCheck({
+                  repository,
+                  headSha: pullRequest.head.sha,
+                  isVulnerability,
+                  waitSatisfied,
+                  readyAt: new Date(readyAtMs).toISOString(),
+                });
+
+                if (!waitSatisfied) {
+                  summary.waitingPullRequests += 1;
+                  continue;
+                }
+
+                const evaluation = await evaluatePullRequestState({
+                  repository,
+                  pullRequestNumber: pullRequest.number,
+                });
+
+                if (!evaluation.ready) {
+                  summary.skippedPullRequests += 1;
+                  continue;
+                }
+
+                try {
+                  await github.rest.pulls.merge({
+                    owner: repository.owner.login,
+                    repo: repository.name,
+                    pull_number: pullRequest.number,
+                    merge_method: "merge",
+                  });
+                  summary.mergedPullRequests += 1;
+                } catch (error) {
+                  if (error.status === 405 || error.status === 409) {
+                    summary.skippedPullRequests += 1;
+                    continue;
+                  }
+
+                  throw error;
+                }
+              }
+            } catch (error) {
+              failures.push(`${repository.full_name}: ${error.message}`);
+            }
+          }
+
+          await core.summary
+            .addHeading("Renovate merge gate")
+            .addList([
+              `Eligible repositories: ${summary.repositories}`,
+              `Open Renovate pull requests: ${summary.renovatePullRequests}`,
+              `Waiting pull requests: ${summary.waitingPullRequests}`,
+              `Merged pull requests: ${summary.mergedPullRequests}`,
+              `Skipped ready checks or merges: ${summary.skippedPullRequests}`,
+            ])
+            .write();
+
+          if (failures.length > 0) {
+            core.setFailed(`Merge gate failures:\n${failures.join("\n")}`);
+          }

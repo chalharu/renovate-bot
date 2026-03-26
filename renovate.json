@@ -3,6 +3,13 @@
   "extends": [
     "github>chalharu/renovate-config"
   ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": [
+      "renovate",
+      "security"
+    ]
+  },
   "customManagers": [
     {
       "customType": "regex",
