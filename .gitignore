@@ -1,0 +1,4 @@
+# Temporary Node.js artifacts created during local ad hoc validation.
+/node_modules/
+/package-lock.json
+/package.json
