@@ -9,6 +9,8 @@ on:
       - '.gitlab/renovate.json5?'
       - '.renovaterc'
       - '.renovaterc.json5?'
+      - '.github/workflows/ci-config.yaml'
+      - '.github/workflows/renovate.yaml'
       - 'package.json'
 
 jobs:

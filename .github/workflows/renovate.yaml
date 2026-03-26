@@ -6,6 +6,7 @@ on:
 concurrency: renovate
 env:
   IMAGE_ARCHIVE_PATH: /tmp/renovate-image.tar
+  REPOSITORY_DATA_PATH: /tmp/eligible-repositories.json
 jobs:
   enumerate_repositories:
     name: Enumerate accessible repositories
@@ -13,7 +14,6 @@ jobs:
     outputs:
       matrix: ${{ steps.list_repositories.outputs.matrix }}
       repository_count: ${{ steps.list_repositories.outputs.repository_count }}
-      warmup_repository: ${{ steps.list_repositories.outputs.warmup_repository }}
       warmed_image_available: ${{ steps.finalize_warmed_image.outputs.image_available }}
     steps:
     - name: Get token
@@ -30,25 +30,97 @@ jobs:
       with:
         github-token: ${{ steps.get_token.outputs.token }}
         script: |
+          const fs = require("node:fs");
+          const supportedConfigPaths = [
+            "renovate.json",
+            "renovate.json5",
+            ".github/renovate.json",
+            ".github/renovate.json5",
+            ".gitlab/renovate.json",
+            ".gitlab/renovate.json5",
+            ".renovaterc",
+            ".renovaterc.json",
+            ".renovaterc.json5",
+          ];
+
+          const hasSupportedRenovateConfig = async (repository) => {
+            for (const path of supportedConfigPaths) {
+              try {
+                await github.rest.repos.getContent({
+                  owner: repository.owner.login,
+                  repo: repository.name,
+                  path,
+                });
+                return true;
+              } catch (error) {
+                if (error.status === 404) {
+                  continue;
+                }
+
+                throw new Error(`Unable to determine repository eligibility (status: ${error.status ?? "unknown"})`);
+              }
+            }
+
+            return false;
+          };
+
           const repositories = await github.paginate("GET /installation/repositories", {
             per_page: 100,
           });
           const uniqueRepositories = [...new Map(
             repositories
-              .filter((repository) => repository.owner.login === context.repo.owner)
-              .map((repository) => [repository.full_name, {
-                owner: repository.owner.login,
-                repository: repository.name,
-                full_name: repository.full_name,
-              }]),
-          ).values()].sort((left, right) => left.full_name.localeCompare(right.full_name));
+              .filter((repository) =>
+                repository.owner.login === context.repo.owner &&
+                !repository.archived &&
+                !repository.disabled,
+              )
+              .map((repository) => [repository.full_name, repository]),
+          ).values()];
+          const eligibleRepositories = [];
+
+          for (const repository of uniqueRepositories) {
+            if (!(await hasSupportedRenovateConfig(repository))) {
+              continue;
+            }
+
+            eligibleRepositories.push({
+              owner: repository.owner.login,
+              repository: repository.name,
+              full_name: repository.full_name,
+              private: repository.private,
+            });
+          }
+
+          eligibleRepositories.sort((left, right) => left.full_name.localeCompare(right.full_name));
           const warmupRepository =
-            uniqueRepositories.find((repository) => repository.full_name === context.repo.owner + "/" + context.repo.repo)?.full_name ??
-            uniqueRepositories[0]?.full_name ??
-            "";
-          core.setOutput("matrix", JSON.stringify({ include: uniqueRepositories }));
-          core.setOutput("repository_count", String(uniqueRepositories.length));
-          core.setOutput("warmup_repository", warmupRepository);
+            eligibleRepositories.find((repository) => repository.full_name === context.repo.owner + "/" + context.repo.repo) ??
+            eligibleRepositories[0] ??
+            null;
+
+          for (const repository of eligibleRepositories) {
+            if (!repository.private) {
+              continue;
+            }
+
+            core.setSecret(repository.full_name);
+            core.setSecret(repository.repository);
+          }
+
+          core.setOutput("matrix", JSON.stringify({
+            include: eligibleRepositories.map((_, repository_index) => ({ repository_index })),
+          }));
+          fs.writeFileSync(process.env.REPOSITORY_DATA_PATH, JSON.stringify(eligibleRepositories));
+          core.setOutput("repository_count", String(eligibleRepositories.length));
+          core.setOutput("warmup_repository", warmupRepository?.full_name ?? "");
+
+    - name: Upload repository data
+      if: ${{ steps.list_repositories.outputs.repository_count != '0' }}
+      uses: actions/upload-artifact@v7.0.0
+      with:
+        name: renovate-repositories
+        path: ${{ env.REPOSITORY_DATA_PATH }}
+        if-no-files-found: error
+        retention-days: 1
 
     - name: Warm Renovate image
       if: ${{ steps.list_repositories.outputs.repository_count != '0' }}
@@ -196,7 +268,7 @@ jobs:
         fi
 
   renovate:
-    name: Self-hosted Renovate (${{ matrix.full_name }})
+    name: Self-hosted Renovate
     needs: enumerate_repositories
     if: ${{ needs.enumerate_repositories.outputs.repository_count != '0' }}
     strategy:
@@ -218,14 +290,46 @@ jobs:
       continue-on-error: true
       run: docker load --input "${IMAGE_ARCHIVE_PATH}"
 
+    - name: Download repository data
+      uses: actions/download-artifact@v8.0.1
+      with:
+        name: renovate-repositories
+        path: /tmp
+
+    - name: Resolve repository details
+      id: resolve_repository
+      uses: actions/github-script@v8.0.0
+      env:
+        REPOSITORY_INDEX: ${{ matrix.repository_index }}
+      with:
+        script: |
+          const fs = require("node:fs");
+          const repositories = JSON.parse(fs.readFileSync(process.env.REPOSITORY_DATA_PATH, "utf8"));
+          const repositoryIndex = Number(process.env.REPOSITORY_INDEX);
+          const repository = repositories[repositoryIndex];
+
+          if (!repository) {
+            core.setFailed(`Repository index ${process.env.REPOSITORY_INDEX} is unavailable`);
+            return;
+          }
+
+          if (repository.private) {
+            core.setSecret(repository.full_name);
+            core.setSecret(repository.repository);
+          }
+
+          core.setOutput("owner", repository.owner);
+          core.setOutput("repository", repository.repository);
+          core.setOutput("full_name", repository.full_name);
+
     - name: Get token
       id: get_token
       uses: actions/create-github-app-token@v3.0.0
       with:
         private-key: ${{ secrets.PRIVATE_KEY }}
         app-id: ${{ secrets.APP_ID }}
-        owner: ${{ matrix.owner }}
-        repositories: ${{ matrix.repository }}
+        owner: ${{ steps.resolve_repository.outputs.owner }}
+        repositories: ${{ steps.resolve_repository.outputs.repository }}
 
     - name: Self-hosted Renovate
       uses: renovatebot/github-action@68a3ea99af6ad249940b5a9fdf44fc6d7f14378b # v46.1.6
@@ -234,7 +338,7 @@ jobs:
         token: '${{ steps.get_token.outputs.token }}'
       env:
         RENOVATE_AUTODISCOVER: "false"
-        RENOVATE_REPOSITORIES: ${{ matrix.full_name }}
+        RENOVATE_REPOSITORIES: ${{ steps.resolve_repository.outputs.full_name }}
         RENOVATE_ONBOARDING: "false"
         RENOVATE_PLATFORM_COMMIT: "true"
         RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
