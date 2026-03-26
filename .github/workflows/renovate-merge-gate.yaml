@@ -71,7 +71,22 @@ jobs:
             return false;
           };
 
-          const upsertWaitCheck = async ({ repository, headSha, isVulnerability, waitSatisfied, readyAt }) => {
+          const getHeadCommitTimestamp = async ({ repository, ref }) => {
+            const { data } = await github.rest.repos.getCommit({
+              owner: repository.owner.login,
+              repo: repository.name,
+              ref,
+            });
+            const latestTimestamp = data.commit?.committer?.date ?? data.commit?.author?.date;
+
+            if (!latestTimestamp) {
+              throw new Error("Unable to determine the latest Renovate head commit timestamp");
+            }
+
+            return latestTimestamp;
+          };
+
+          const upsertWaitCheck = async ({ repository, headSha, isVulnerability, waitSatisfied, readyAt, latestHeadUpdateAt }) => {
             const now = new Date().toISOString();
             const payload = {
               owner: repository.owner.login,
@@ -81,12 +96,12 @@ jobs:
               status: waitSatisfied ? "completed" : "in_progress",
               started_at: now,
               output: {
-                title: isVulnerability ? "Security update can merge after CI" : waitSatisfied ? "Wait period satisfied" : "Waiting for 3-day hold period",
+                title: isVulnerability ? "Security update can merge after CI" : waitSatisfied ? "Wait period satisfied from latest update" : "Waiting 3 days from latest update",
                 summary: isVulnerability
                   ? "This Renovate PR addresses a vulnerability and can merge as soon as the repository CI passes."
                   : waitSatisfied
-                    ? "This Renovate PR has been open for at least three days and can merge as soon as the repository CI passes."
-                    : `This Renovate PR stays pending until ${readyAt}.`,
+                    ? `The latest Renovate head update was at ${latestHeadUpdateAt}. This PR can merge as soon as the repository CI passes.`
+                    : `The latest Renovate head update was at ${latestHeadUpdateAt}. This Renovate PR stays pending until ${readyAt}.`,
               },
             };
 
@@ -265,7 +280,17 @@ jobs:
                 const isVulnerability =
                   labelNames.some((label) => WAIT_LABELS.has(label)) ||
                   /\[SECURITY\]/.test(`${pullRequest.title}\n${pullRequest.body ?? ""}`);
-                const readyAtMs = new Date(pullRequest.created_at).getTime() + WAIT_WINDOW_MS;
+                const latestHeadUpdateAt = await getHeadCommitTimestamp({
+                  repository,
+                  ref: pullRequest.head.sha,
+                });
+                const latestHeadUpdateMs = Date.parse(latestHeadUpdateAt);
+
+                if (Number.isNaN(latestHeadUpdateMs)) {
+                  throw new Error("Unable to calculate wait period from the latest Renovate head commit timestamp");
+                }
+
+                const readyAtMs = latestHeadUpdateMs + WAIT_WINDOW_MS;
                 const waitSatisfied = isVulnerability || Date.now() >= readyAtMs;
 
                 await upsertWaitCheck({
@@ -274,6 +299,7 @@ jobs:
                   isVulnerability,
                   waitSatisfied,
                   readyAt: new Date(readyAtMs).toISOString(),
+                  latestHeadUpdateAt,
                 });
 
                 if (!waitSatisfied) {
