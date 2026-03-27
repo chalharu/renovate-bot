@@ -10,6 +10,7 @@ on:
       - '.renovaterc'
       - '.renovaterc.json5?'
       - '.github/workflows/ci-config.yaml'
+      - '.github/workflows/renovate-merge-gate.yaml'
       - '.github/workflows/renovate.yaml'
       - 'package.json'
 

@@ -4,6 +4,9 @@ on:
   schedule:
   - cron: '*/5 * * * *'
 concurrency: renovate
+permissions:
+  actions: write
+  contents: read
 env:
   REPOSITORY_DATA_PATH: /tmp/eligible-repositories.json
 jobs:
@@ -178,3 +181,22 @@ jobs:
         RENOVATE_PLATFORM_COMMIT: "true"
         RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
         LOG_LEVEL: warn
+
+    - name: Refresh wait checks
+      uses: actions/github-script@v8.0.0
+      env:
+        TARGET_REPOSITORY: ${{ steps.resolve_repository.outputs.repository }}
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const ref = context.ref.startsWith("refs/heads/") ? context.ref.slice("refs/heads/".length) : "main";
+
+          await github.rest.actions.createWorkflowDispatch({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            workflow_id: "renovate-merge-gate.yaml",
+            ref,
+            inputs: {
+              repository: process.env.TARGET_REPOSITORY,
+            },
+          });
