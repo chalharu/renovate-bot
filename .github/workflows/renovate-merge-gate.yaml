@@ -2,10 +2,16 @@ name: Renovate merge gate
 
 on:
   workflow_dispatch:
+    inputs:
+      repository:
+        description: Repository name to refresh immediately
+        required: false
+        type: string
   schedule:
   - cron: '*/5 * * * *'
 
-concurrency: renovate-merge-gate
+concurrency:
+  group: renovate-merge-gate-${{ github.event.inputs.repository || 'all' }}
 
 jobs:
   manage_gate:
@@ -26,7 +32,6 @@ jobs:
         github-token: ${{ steps.get_token.outputs.token }}
         script: |
           const WAIT_CHECK_NAME = "Renovate wait period";
-          const WAIT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
           const SUPPORTED_CONFIG_PATHS = [
             "renovate.json",
             "renovate.json5",
@@ -41,10 +46,12 @@ jobs:
           const SUCCESSFUL_CHECK_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
           const SUCCESSFUL_STATUS_STATES = new Set(["SUCCESS"]);
           const WAIT_LABELS = new Set(["security"]);
+          const WAIT_LABEL_PATTERN = /^renovate-gate-wait-(\d+)d$/;
           const failures = [];
           const summary = {
             repositories: 0,
             renovatePullRequests: 0,
+            ignoredPullRequests: 0,
             waitingPullRequests: 0,
             mergedPullRequests: 0,
             skippedPullRequests: 0,
@@ -71,6 +78,25 @@ jobs:
             return false;
           };
 
+          const resolveWaitPolicy = (labelNames) => {
+            const waitDays = labelNames
+              .map((label) => WAIT_LABEL_PATTERN.exec(label))
+              .filter(Boolean)
+              .map((match) => Number(match[1]))
+              .filter((value) => Number.isInteger(value) && value >= 0);
+
+            if (waitDays.length === 0) {
+              return null;
+            }
+
+            const effectiveWaitDays = Math.max(...waitDays);
+
+            return {
+              waitDays: effectiveWaitDays,
+              waitWindowMs: effectiveWaitDays * 24 * 60 * 60 * 1000,
+            };
+          };
+
           const getHeadCommitTimestamp = async ({ repository, ref }) => {
             const { data } = await github.rest.repos.getCommit({
               owner: repository.owner.login,
@@ -86,30 +112,8 @@ jobs:
             return latestTimestamp;
           };
 
-          const upsertWaitCheck = async ({ repository, headSha, isVulnerability, waitSatisfied, readyAt, latestHeadUpdateAt }) => {
+          const upsertWaitCheck = async ({ repository, headSha, status, conclusion, title, details, createIfMissing = true }) => {
             const now = new Date().toISOString();
-            const payload = {
-              owner: repository.owner.login,
-              repo: repository.name,
-              name: WAIT_CHECK_NAME,
-              head_sha: headSha,
-              status: waitSatisfied ? "completed" : "in_progress",
-              started_at: now,
-              output: {
-                title: isVulnerability ? "Security update can merge after CI" : waitSatisfied ? "Wait period satisfied from latest update" : "Waiting 3 days from latest update",
-                summary: isVulnerability
-                  ? "This Renovate PR addresses a vulnerability and can merge as soon as the repository CI passes."
-                  : waitSatisfied
-                    ? `The latest Renovate head update was at ${latestHeadUpdateAt}. This PR can merge as soon as the repository CI passes.`
-                    : `The latest Renovate head update was at ${latestHeadUpdateAt}. This Renovate PR stays pending until ${readyAt}.`,
-              },
-            };
-
-            if (waitSatisfied) {
-              payload.conclusion = "success";
-              payload.completed_at = now;
-            }
-
             const { data } = await github.rest.checks.listForRef({
               owner: repository.owner.login,
               repo: repository.name,
@@ -119,6 +123,22 @@ jobs:
               per_page: 100,
             });
             const existing = data.check_runs.find((checkRun) => checkRun.name === WAIT_CHECK_NAME);
+            const payload = {
+              owner: repository.owner.login,
+              repo: repository.name,
+              name: WAIT_CHECK_NAME,
+              status,
+              started_at: now,
+              output: {
+                title,
+                summary: details,
+              },
+            };
+
+            if (status === "completed") {
+              payload.conclusion = conclusion;
+              payload.completed_at = now;
+            }
 
             if (existing) {
               await github.rest.checks.update({
@@ -135,6 +155,11 @@ jobs:
               return;
             }
 
+            if (!createIfMissing) {
+              return;
+            }
+
+            payload.head_sha = headSha;
             await github.rest.checks.create(payload);
           };
 
@@ -221,9 +246,19 @@ jobs:
             };
           };
 
-          const repositories = await github.paginate("GET /installation/repositories", {
-            per_page: 100,
-          });
+          const requestedRepositoryName = (context.payload.inputs?.repository ?? "").trim();
+          const repositories = requestedRepositoryName
+            ? [
+              (
+                await github.rest.repos.get({
+                  owner: context.repo.owner,
+                  repo: requestedRepositoryName,
+                })
+              ).data,
+            ]
+            : await github.paginate("GET /installation/repositories", {
+              per_page: 100,
+            });
           const uniqueRepositories = [...new Map(
             repositories
               .filter((repository) =>
@@ -276,10 +311,27 @@ jobs:
 
                 const labelNames = pullRequest.labels
                   .map((label) => typeof label === "string" ? label : label.name)
-                  .filter(Boolean);
+                  .filter(Boolean)
+                  .map((label) => label.toLowerCase());
+                const waitPolicy = resolveWaitPolicy(labelNames);
                 const isVulnerability =
                   labelNames.some((label) => WAIT_LABELS.has(label)) ||
                   /\[SECURITY\]/.test(`${pullRequest.title}\n${pullRequest.body ?? ""}`);
+
+                if (!isVulnerability && !waitPolicy) {
+                  await upsertWaitCheck({
+                    repository,
+                    headSha: pullRequest.head.sha,
+                    status: "completed",
+                    conclusion: "success",
+                    title: "Wait policy not enabled",
+                    details: "No repo-local Renovate gate label applies to this pull request.",
+                    createIfMissing: false,
+                  });
+                  summary.ignoredPullRequests += 1;
+                  continue;
+                }
+
                 const latestHeadUpdateAt = await getHeadCommitTimestamp({
                   repository,
                   ref: pullRequest.head.sha,
@@ -290,16 +342,23 @@ jobs:
                   throw new Error("Unable to calculate wait period from the latest Renovate head commit timestamp");
                 }
 
-                const readyAtMs = latestHeadUpdateMs + WAIT_WINDOW_MS;
+                const waitWindowMs = isVulnerability ? 0 : waitPolicy.waitWindowMs;
+                const readyAtMs = latestHeadUpdateMs + waitWindowMs;
                 const waitSatisfied = isVulnerability || Date.now() >= readyAtMs;
+                const waitPeriodLabel = isVulnerability ? "Security update can merge after CI" : waitSatisfied ? `Wait period satisfied from latest update (${waitPolicy.waitDays}d)` : `Waiting ${waitPolicy.waitDays} days from latest update`;
+                const waitPeriodDetails = isVulnerability
+                  ? "This Renovate PR addresses a vulnerability and can merge as soon as the repository CI passes."
+                  : waitSatisfied
+                    ? `The latest Renovate head update was at ${latestHeadUpdateAt}. The configured wait period is ${waitPolicy.waitDays} day(s), so this PR can merge as soon as the repository CI passes.`
+                    : `The latest Renovate head update was at ${latestHeadUpdateAt}. The configured wait period is ${waitPolicy.waitDays} day(s), so this Renovate PR stays pending until ${new Date(readyAtMs).toISOString()}.`;
 
                 await upsertWaitCheck({
                   repository,
                   headSha: pullRequest.head.sha,
-                  isVulnerability,
-                  waitSatisfied,
-                  readyAt: new Date(readyAtMs).toISOString(),
-                  latestHeadUpdateAt,
+                  status: waitSatisfied ? "completed" : "in_progress",
+                  conclusion: waitSatisfied ? "success" : undefined,
+                  title: waitPeriodLabel,
+                  details: waitPeriodDetails,
                 });
 
                 if (!waitSatisfied) {
@@ -344,6 +403,7 @@ jobs:
             .addList([
               `Eligible repositories: ${summary.repositories}`,
               `Open Renovate pull requests: ${summary.renovatePullRequests}`,
+              `Ignored pull requests without gate policy: ${summary.ignoredPullRequests}`,
               `Waiting pull requests: ${summary.waitingPullRequests}`,
               `Merged pull requests: ${summary.mergedPullRequests}`,
               `Skipped ready checks or merges: ${summary.skippedPullRequests}`,

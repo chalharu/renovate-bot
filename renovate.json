@@ -12,7 +12,7 @@
   },
   "packageRules": [
     {
-      "description": "Give each target version or digest its own Renovate branch so merge gating ages updates independently",
+      "description": "Give each target version or digest its own Renovate branch and opt this repository into a 3-day gate via labels",
       "matchUpdateTypes": [
         "digest",
         "major",
@@ -20,6 +20,9 @@
         "patch",
         "pin",
         "pinDigest"
+      ],
+      "addLabels": [
+        "renovate-gate-wait-3d"
       ],
       "branchTopic": "{{{depNameSanitized}}}{{#if newVersion}}-{{{newVersion}}}{{/if}}{{#if newDigestShort}}-{{{newDigestShort}}}{{/if}}"
     }
