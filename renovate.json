@@ -3,6 +3,7 @@
   "extends": [
     "github>chalharu/renovate-config"
   ],
+  "pruneStaleBranches": false,
   "vulnerabilityAlerts": {
     "enabled": true,
     "labels": [
