@@ -4,7 +4,6 @@
     "github>chalharu/renovate-config"
   ],
   "pruneStaleBranches": false,
-  "separateDigest": true,
   "separateMajorMinor": true,
   "separateMinorPatch": true,
   "separateMultipleMajor": true,
