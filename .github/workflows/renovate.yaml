@@ -8,6 +8,7 @@ permissions:
   actions: write
   contents: read
 env:
+  RENOVATE_LOG_PATH: /tmp/renovate.log
   REPOSITORY_DATA_PATH: /tmp/eligible-repositories.json
 jobs:
   enumerate_repositories:
@@ -180,11 +181,129 @@ jobs:
         RENOVATE_ONBOARDING: "false"
         RENOVATE_PLATFORM_COMMIT: "true"
         RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
+        LOG_FILE: ${{ env.RENOVATE_LOG_PATH }}
+        LOG_FILE_FORMAT: json
+        LOG_FILE_LEVEL: debug
         LOG_LEVEL: warn
+
+    - name: Extract Renovate branch metadata
+      id: extract_branch_metadata
+      uses: actions/github-script@v8.0.0
+      env:
+        LOG_PATH: ${{ env.RENOVATE_LOG_PATH }}
+      with:
+        script: |
+          const fs = require("node:fs");
+          const sanitizeDepName = (depName) => depName
+            .replace("@types/", "")
+            .replace("@", "")
+            .replace(/\//g, "-")
+            .replace(/\s+/g, "-")
+            .replace(/:/g, "-")
+            .replace(/-+/g, "-")
+            .toLowerCase();
+          const shortenDigest = (digest) => typeof digest === "string"
+            ? digest.replace(/^sha256:/, "").substring(0, 7)
+            : null;
+          let activeBranches = [];
+          let activeBranchesKnown = false;
+          let branchUpdates = [];
+          let branchUpdatesKnown = false;
+
+          if (fs.existsSync(process.env.LOG_PATH)) {
+            const lines = fs.readFileSync(process.env.LOG_PATH, "utf8")
+              .split(/\r?\n/)
+              .filter(Boolean);
+
+            for (const line of lines) {
+              try {
+                const entry = JSON.parse(line);
+
+                if (entry.msg === "Branch lists" && Array.isArray(entry.branchList)) {
+                  activeBranches = entry.branchList;
+                  activeBranchesKnown = true;
+                  continue;
+                }
+
+                if (!activeBranchesKnown && entry.msg === "No renovate branches found") {
+                  activeBranches = [];
+                  activeBranchesKnown = true;
+                  continue;
+                }
+
+                if (entry.msg === "packageFiles with updates" && entry.config && typeof entry.config === "object") {
+                  const extractedUpdates = new Map();
+
+                  for (const [manager, packageFiles] of Object.entries(entry.config)) {
+                    if (!Array.isArray(packageFiles)) {
+                      continue;
+                    }
+
+                    for (const packageFile of packageFiles) {
+                      if (!Array.isArray(packageFile?.deps)) {
+                        continue;
+                      }
+
+                      for (const dep of packageFile.deps) {
+                        if (!Array.isArray(dep?.updates)) {
+                          continue;
+                        }
+
+                        for (const update of dep.updates) {
+                          if (!update || typeof update.branchName !== "string") {
+                            continue;
+                          }
+
+                          const depNameValue = update.depName ?? dep.depName ?? update.packageName ?? dep.packageName;
+                          const depName = typeof depNameValue === "string" ? depNameValue : null;
+                          const sourceUrlValue = update.sourceUrl ?? dep.sourceUrl;
+                          const packageNameValue = update.packageName ?? dep.packageName;
+                          const currentVersionValue = update.currentVersion ?? dep.currentVersion;
+                          const currentValueValue = update.currentValue ?? dep.currentValue;
+
+                          extractedUpdates.set(update.branchName, {
+                            branchName: update.branchName,
+                            manager,
+                            packageFile: typeof packageFile.packageFile === "string" ? packageFile.packageFile : null,
+                            depName,
+                            depNameSanitized: depName ? sanitizeDepName(depName) : null,
+                            packageName: typeof packageNameValue === "string" ? packageNameValue : null,
+                            sourceUrl: typeof sourceUrlValue === "string" ? sourceUrlValue : null,
+                            updateType: typeof update.updateType === "string" ? update.updateType : null,
+                            currentVersion: typeof currentVersionValue === "string" ? currentVersionValue : null,
+                            currentValue: typeof currentValueValue === "string" ? currentValueValue : null,
+                            currentDigestShort: shortenDigest(update.currentDigest ?? dep.currentDigest),
+                            newVersion: typeof update.newVersion === "string" ? update.newVersion : null,
+                            newValue: typeof update.newValue === "string" ? update.newValue : null,
+                            newDigestShort: shortenDigest(update.newDigest),
+                          });
+                        }
+                      }
+                    }
+                  }
+
+                  branchUpdates = Array.from(extractedUpdates.values())
+                    .sort((left, right) => left.branchName.localeCompare(right.branchName));
+                  branchUpdatesKnown = true;
+                }
+              } catch (error) {
+                // Ignore non-JSON log lines.
+              }
+            }
+          }
+
+          core.setOutput("active_branches", JSON.stringify(activeBranches));
+          core.setOutput("active_branches_known", String(activeBranchesKnown));
+          core.setOutput("branch_updates", JSON.stringify(branchUpdates));
+          core.setOutput("branch_updates_known", String(branchUpdatesKnown));
 
     - name: Refresh wait checks
       uses: actions/github-script@v8.0.0
       env:
+        ACTIVE_BRANCHES: ${{ steps.extract_branch_metadata.outputs.active_branches }}
+        ACTIVE_BRANCHES_KNOWN: ${{ steps.extract_branch_metadata.outputs.active_branches_known }}
+        BRANCH_UPDATES: ${{ steps.extract_branch_metadata.outputs.branch_updates }}
+        BRANCH_UPDATES_KNOWN: ${{ steps.extract_branch_metadata.outputs.branch_updates_known }}
         TARGET_REPOSITORY: ${{ steps.resolve_repository.outputs.repository }}
       with:
         github-token: ${{ github.token }}
@@ -197,6 +316,10 @@ jobs:
             workflow_id: "renovate-merge-gate.yaml",
             ref,
             inputs: {
+              active_branches: process.env.ACTIVE_BRANCHES,
+              active_branches_known: process.env.ACTIVE_BRANCHES_KNOWN,
+              branch_updates: process.env.BRANCH_UPDATES,
+              branch_updates_known: process.env.BRANCH_UPDATES_KNOWN,
               repository: process.env.TARGET_REPOSITORY,
             },
           });
