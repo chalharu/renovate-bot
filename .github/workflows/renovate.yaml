@@ -8,6 +8,7 @@ permissions:
   actions: write
   contents: read
 env:
+  RENOVATE_LOG_PATH: /tmp/renovate.log
   REPOSITORY_DATA_PATH: /tmp/eligible-repositories.json
 jobs:
   enumerate_repositories:
@@ -180,11 +181,55 @@ jobs:
         RENOVATE_ONBOARDING: "false"
         RENOVATE_PLATFORM_COMMIT: "true"
         RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
+        LOG_FILE: ${{ env.RENOVATE_LOG_PATH }}
+        LOG_FILE_FORMAT: json
+        LOG_FILE_LEVEL: debug
         LOG_LEVEL: warn
+
+    - name: Extract active Renovate branches
+      id: extract_active_branches
+      uses: actions/github-script@v8.0.0
+      env:
+        LOG_PATH: ${{ env.RENOVATE_LOG_PATH }}
+      with:
+        script: |
+          const fs = require("node:fs");
+          let activeBranches = [];
+          let isAuthoritative = false;
+
+          if (fs.existsSync(process.env.LOG_PATH)) {
+            const lines = fs.readFileSync(process.env.LOG_PATH, "utf8")
+              .split(/\r?\n/)
+              .filter(Boolean);
+
+            for (const line of lines) {
+              try {
+                const entry = JSON.parse(line);
+
+                if (entry.msg === "Branch lists" && Array.isArray(entry.branchList)) {
+                  activeBranches = entry.branchList;
+                  isAuthoritative = true;
+                  continue;
+                }
+
+                if (!isAuthoritative && entry.msg === "No renovate branches found") {
+                  activeBranches = [];
+                  isAuthoritative = true;
+                }
+              } catch (error) {
+                // Ignore non-JSON log lines.
+              }
+            }
+          }
+
+          core.setOutput("active_branches", JSON.stringify(activeBranches));
+          core.setOutput("active_branches_known", String(isAuthoritative));
 
     - name: Refresh wait checks
       uses: actions/github-script@v8.0.0
       env:
+        ACTIVE_BRANCHES: ${{ steps.extract_active_branches.outputs.active_branches }}
+        ACTIVE_BRANCHES_KNOWN: ${{ steps.extract_active_branches.outputs.active_branches_known }}
         TARGET_REPOSITORY: ${{ steps.resolve_repository.outputs.repository }}
       with:
         github-token: ${{ github.token }}
@@ -197,6 +242,8 @@ jobs:
             workflow_id: "renovate-merge-gate.yaml",
             ref,
             inputs: {
+              active_branches: process.env.ACTIVE_BRANCHES,
+              active_branches_known: process.env.ACTIVE_BRANCHES_KNOWN,
               repository: process.env.TARGET_REPOSITORY,
             },
           });

@@ -3,6 +3,14 @@ name: Renovate merge gate
 on:
   workflow_dispatch:
     inputs:
+      active_branches:
+        description: JSON array of branch names that Renovate still considers active for the targeted repository
+        required: false
+        type: string
+      active_branches_known:
+        description: Whether the provided active branch list is authoritative for the targeted repository
+        required: false
+        type: string
       repository:
         description: Repository name to refresh immediately
         required: false
@@ -50,6 +58,7 @@ jobs:
           const failures = [];
           const summary = {
             repositories: 0,
+            autoclosedPullRequests: 0,
             renovatePullRequests: 0,
             ignoredPullRequests: 0,
             waitingPullRequests: 0,
@@ -95,6 +104,57 @@ jobs:
               waitDays: effectiveWaitDays,
               waitWindowMs: effectiveWaitDays * 24 * 60 * 60 * 1000,
             };
+          };
+
+          const autoclosePullRequest = async ({ repository, pullRequest, reason }) => {
+            const title = pullRequest.title.endsWith("- autoclosed")
+              ? pullRequest.title
+              : `${pullRequest.title} - autoclosed`;
+            let closedPullRequest = false;
+            let deletedBranch = false;
+
+            try {
+              await github.rest.pulls.update({
+                owner: repository.owner.login,
+                repo: repository.name,
+                pull_number: pullRequest.number,
+                title,
+                state: "closed",
+              });
+              closedPullRequest = true;
+            } catch (error) {
+              if (error.status !== 405 && error.status !== 409 && error.status !== 422) {
+                throw error;
+              }
+            }
+
+            try {
+              await github.rest.git.deleteRef({
+                owner: repository.owner.login,
+                repo: repository.name,
+                ref: `heads/${pullRequest.head.ref}`,
+              });
+              deletedBranch = true;
+            } catch (error) {
+              if (error.status !== 404 && error.status !== 422) {
+                throw error;
+              }
+            }
+
+            if (closedPullRequest) {
+              try {
+                await github.rest.issues.createComment({
+                  owner: repository.owner.login,
+                  repo: repository.name,
+                  issue_number: pullRequest.number,
+                  body: `Autoclosed by the Renovate merge gate because ${reason}.`,
+                });
+              } catch (error) {
+                core.warning(`Unable to add stale-close comment to PR #${pullRequest.number}: ${error.message}`);
+              }
+            }
+
+            return closedPullRequest || deletedBranch;
           };
 
           const getHeadCommitTimestamp = async ({ repository, ref }) => {
@@ -247,6 +307,24 @@ jobs:
           };
 
           const requestedRepositoryName = (context.payload.inputs?.repository ?? "").trim();
+          const activeBranchesKnown = (context.payload.inputs?.active_branches_known ?? "").trim().toLowerCase() === "true";
+          let activeBranchSet = null;
+
+          if (activeBranchesKnown && requestedRepositoryName) {
+            try {
+              const rawActiveBranches = (context.payload.inputs?.active_branches ?? "").trim();
+              const parsedActiveBranches = JSON.parse(rawActiveBranches || "[]");
+
+              if (!Array.isArray(parsedActiveBranches) || parsedActiveBranches.some((branch) => typeof branch !== "string")) {
+                throw new Error("Active branch input must be a JSON array of strings");
+              }
+
+              activeBranchSet = new Set(parsedActiveBranches);
+            } catch (error) {
+              throw new Error(`Unable to parse active branch input: ${error.message}`);
+            }
+          }
+
           const repositories = requestedRepositoryName
             ? [
               (
@@ -308,6 +386,20 @@ jobs:
                 }
 
                 summary.renovatePullRequests += 1;
+
+                if (activeBranchSet && !activeBranchSet.has(pullRequest.head.ref)) {
+                  const wasAutoclosed = await autoclosePullRequest({
+                    repository,
+                    pullRequest,
+                    reason: "the branch is no longer active in the latest Renovate run",
+                  });
+                  if (wasAutoclosed) {
+                    summary.autoclosedPullRequests += 1;
+                  } else {
+                    summary.skippedPullRequests += 1;
+                  }
+                  continue;
+                }
 
                 const labelNames = pullRequest.labels
                   .map((label) => typeof label === "string" ? label : label.name)
@@ -403,6 +495,7 @@ jobs:
             .addList([
               `Eligible repositories: ${summary.repositories}`,
               `Open Renovate pull requests: ${summary.renovatePullRequests}`,
+              `Autoclosed stale pull requests: ${summary.autoclosedPullRequests}`,
               `Ignored pull requests without gate policy: ${summary.ignoredPullRequests}`,
               `Waiting pull requests: ${summary.waitingPullRequests}`,
               `Merged pull requests: ${summary.mergedPullRequests}`,
