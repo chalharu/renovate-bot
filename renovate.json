@@ -4,6 +4,11 @@
     "github>chalharu/renovate-config"
   ],
   "pruneStaleBranches": false,
+  "separateDigest": true,
+  "separateMajorMinor": true,
+  "separateMinorPatch": true,
+  "separateMultipleMajor": true,
+  "separateMultipleMinor": true,
   "vulnerabilityAlerts": {
     "enabled": true,
     "labels": [
@@ -25,7 +30,16 @@
       "addLabels": [
         "renovate-gate-wait-3d"
       ],
-      "branchTopic": "{{{depNameSanitized}}}{{#if newVersion}}-{{{newVersion}}}{{/if}}{{#if newDigestShort}}-{{{newDigestShort}}}{{/if}}"
+      "branchTopic": "{{{depNameSanitized}}}__{{updateType}}{{#if newVersion}}__v{{{newVersion}}}{{/if}}{{#if newDigestShort}}__d{{{newDigestShort}}}{{/if}}"
+    },
+    {
+      "description": "Expose custom separateMultiplePatch handling on patch PRs",
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "addLabels": [
+        "renovate-gate-separate-multiple-patch"
+      ]
     }
   ],
   "customManagers": [
