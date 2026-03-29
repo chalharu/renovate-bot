@@ -181,9 +181,9 @@ jobs:
         RENOVATE_ONBOARDING: "false"
         RENOVATE_PLATFORM_COMMIT: "true"
         RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
-        LOG_FILE: ${{ env.RENOVATE_LOG_PATH }}
-        LOG_FILE_FORMAT: json
-        LOG_FILE_LEVEL: debug
+        RENOVATE_LOG_FILE: ${{ env.RENOVATE_LOG_PATH }}
+        RENOVATE_LOG_FILE_FORMAT: json
+        RENOVATE_LOG_FILE_LEVEL: debug
         LOG_LEVEL: warn
 
     - name: Extract Renovate branch metadata
@@ -306,6 +306,16 @@ jobs:
                 // Ignore non-JSON log lines.
               }
             }
+          } else {
+            core.warning(`Renovate did not create a log file at ${process.env.LOG_PATH}; stale-close and label reconciliation metadata will be unavailable.`);
+          }
+
+          if (!activeBranchesKnown) {
+            core.warning("Unable to extract the authoritative Renovate branch list from the log file.");
+          }
+
+          if (!branchUpdatesKnown) {
+            core.warning("Unable to extract Renovate branch update metadata from the log file.");
           }
 
           core.setOutput("active_branches", JSON.stringify(activeBranches));
