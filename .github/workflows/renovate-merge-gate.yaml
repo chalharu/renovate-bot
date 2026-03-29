@@ -67,6 +67,7 @@ jobs:
           const summary = {
             repositories: 0,
             autoclosedPullRequests: 0,
+            relabeledPullRequests: 0,
             renovatePullRequests: 0,
             ignoredPullRequests: 0,
             waitingPullRequests: 0,
@@ -112,6 +113,69 @@ jobs:
               waitDays: effectiveWaitDays,
               waitWindowMs: effectiveWaitDays * 24 * 60 * 60 * 1000,
             };
+          };
+
+          const normalizeLabels = (labels) => Array.isArray(labels)
+            ? labels
+              .filter((label) => typeof label === "string" && label.trim().length > 0)
+              .map((label) => label.trim())
+            : [];
+
+          const getPullRequestLabelNames = (pullRequest) => normalizeLabels(
+            pullRequest.labels
+              .map((label) => typeof label === "string" ? label : label.name),
+          );
+
+          const reconcileExpectedLabels = async ({ repository, pullRequest, expectedLabels }) => {
+            const normalizedExpectedLabels = [
+              ...new Set(normalizeLabels(expectedLabels)),
+            ];
+
+            if (normalizedExpectedLabels.length === 0) {
+              return {
+                labelNames: getPullRequestLabelNames(pullRequest).map((label) => label.toLowerCase()),
+                relabeled: false,
+              };
+            }
+
+            const existingLabelNames = getPullRequestLabelNames(pullRequest);
+            const existingLowercaseLabels = new Set(
+              existingLabelNames.map((label) => label.toLowerCase()),
+            );
+            const missingLabels = normalizedExpectedLabels.filter(
+              (label) => !existingLowercaseLabels.has(label.toLowerCase()),
+            );
+
+            if (missingLabels.length === 0) {
+              return {
+                labelNames: existingLabelNames.map((label) => label.toLowerCase()),
+                relabeled: false,
+              };
+            }
+
+            try {
+              const { data } = await github.rest.issues.addLabels({
+                owner: repository.owner.login,
+                repo: repository.name,
+                issue_number: pullRequest.number,
+                labels: missingLabels,
+              });
+
+              return {
+                labelNames: normalizeLabels(
+                  data.map((label) => typeof label === "string" ? label : label.name),
+                ).map((label) => label.toLowerCase()),
+                relabeled: true,
+              };
+            } catch (error) {
+              core.warning(
+                `Unable to reconcile labels for PR #${pullRequest.number}: ${error.message}`,
+              );
+              return {
+                labelNames: existingLabelNames.map((label) => label.toLowerCase()),
+                relabeled: false,
+              };
+            }
           };
 
           const sanitizeDepName = (depName) => depName
@@ -567,6 +631,7 @@ jobs:
           const activeBranchesKnown = (context.payload.inputs?.active_branches_known ?? "").trim().toLowerCase() === "true";
           const branchUpdatesKnown = (context.payload.inputs?.branch_updates_known ?? "").trim().toLowerCase() === "true";
           let activeBranchSet = null;
+          const branchExpectedLabelsByName = new Map();
           const depStates = new Map();
 
           if (activeBranchesKnown && requestedRepositoryName) {
@@ -596,6 +661,19 @@ jobs:
               for (const branchUpdate of parsedBranchUpdates) {
                 if (!branchUpdate || typeof branchUpdate !== "object" || typeof branchUpdate.branchName !== "string") {
                   throw new Error("Each branch update must be an object with a branchName");
+                }
+
+                const expectedLabels = normalizeLabels(branchUpdate.expectedLabels);
+                if (expectedLabels.length > 0) {
+                  branchExpectedLabelsByName.set(
+                    branchUpdate.branchName,
+                    [
+                      ...new Set([
+                        ...(branchExpectedLabelsByName.get(branchUpdate.branchName) ?? []),
+                        ...expectedLabels,
+                      ]),
+                    ].sort((left, right) => left.localeCompare(right)),
+                  );
                 }
 
                 const depKey = typeof branchUpdate.depNameSanitized === "string" && branchUpdate.depNameSanitized.length > 0
@@ -726,10 +804,22 @@ jobs:
                   }
                 }
 
-                const labelNames = pullRequest.labels
-                  .map((label) => typeof label === "string" ? label : label.name)
-                  .filter(Boolean)
+                let labelNames = getPullRequestLabelNames(pullRequest)
                   .map((label) => label.toLowerCase());
+                const expectedLabels = branchExpectedLabelsByName.get(pullRequest.head.ref) ?? [];
+
+                if (expectedLabels.length > 0) {
+                  const reconciliation = await reconcileExpectedLabels({
+                    repository,
+                    pullRequest,
+                    expectedLabels,
+                  });
+                  labelNames = reconciliation.labelNames;
+                  if (reconciliation.relabeled) {
+                    summary.relabeledPullRequests += 1;
+                  }
+                }
+
                 const waitPolicy = resolveWaitPolicy(labelNames);
                 const isVulnerability =
                   labelNames.some((label) => WAIT_LABELS.has(label)) ||
@@ -821,6 +911,7 @@ jobs:
               `Eligible repositories: ${summary.repositories}`,
               `Open Renovate pull requests: ${summary.renovatePullRequests}`,
               `Autoclosed stale pull requests: ${summary.autoclosedPullRequests}`,
+              `Relabeled pull requests: ${summary.relabeledPullRequests}`,
               `Ignored pull requests without gate policy: ${summary.ignoredPullRequests}`,
               `Waiting pull requests: ${summary.waitingPullRequests}`,
               `Merged pull requests: ${summary.mergedPullRequests}`,

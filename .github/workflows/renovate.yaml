@@ -202,6 +202,11 @@ jobs:
             .replace(/:/g, "-")
             .replace(/-+/g, "-")
             .toLowerCase();
+          const normalizeLabels = (labels) => Array.isArray(labels)
+            ? labels
+              .filter((label) => typeof label === "string" && label.trim().length > 0)
+              .map((label) => label.trim())
+            : [];
           const shortenDigest = (digest) => typeof digest === "string"
             ? digest.replace(/^sha256:/, "").substring(0, 7)
             : null;
@@ -260,22 +265,33 @@ jobs:
                           const packageNameValue = update.packageName ?? dep.packageName;
                           const currentVersionValue = update.currentVersion ?? dep.currentVersion;
                           const currentValueValue = update.currentValue ?? dep.currentValue;
+                          const previous = extractedUpdates.get(update.branchName);
+                          const expectedLabels = [
+                            ...new Set([
+                              ...(previous?.expectedLabels ?? []),
+                              ...normalizeLabels(dep.labels),
+                              ...normalizeLabels(dep.addLabels),
+                              ...normalizeLabels(update.labels),
+                              ...normalizeLabels(update.addLabels),
+                            ]),
+                          ].sort((left, right) => left.localeCompare(right));
 
                           extractedUpdates.set(update.branchName, {
                             branchName: update.branchName,
-                            manager,
-                            packageFile: typeof packageFile.packageFile === "string" ? packageFile.packageFile : null,
-                            depName,
-                            depNameSanitized: depName ? sanitizeDepName(depName) : null,
-                            packageName: typeof packageNameValue === "string" ? packageNameValue : null,
-                            sourceUrl: typeof sourceUrlValue === "string" ? sourceUrlValue : null,
-                            updateType: typeof update.updateType === "string" ? update.updateType : null,
-                            currentVersion: typeof currentVersionValue === "string" ? currentVersionValue : null,
-                            currentValue: typeof currentValueValue === "string" ? currentValueValue : null,
-                            currentDigestShort: shortenDigest(update.currentDigest ?? dep.currentDigest),
-                            newVersion: typeof update.newVersion === "string" ? update.newVersion : null,
-                            newValue: typeof update.newValue === "string" ? update.newValue : null,
-                            newDigestShort: shortenDigest(update.newDigest),
+                            manager: previous?.manager ?? manager,
+                            packageFile: previous?.packageFile ?? (typeof packageFile.packageFile === "string" ? packageFile.packageFile : null),
+                            depName: previous?.depName ?? depName,
+                            depNameSanitized: previous?.depNameSanitized ?? (depName ? sanitizeDepName(depName) : null),
+                            packageName: previous?.packageName ?? (typeof packageNameValue === "string" ? packageNameValue : null),
+                            sourceUrl: previous?.sourceUrl ?? (typeof sourceUrlValue === "string" ? sourceUrlValue : null),
+                            updateType: previous?.updateType ?? (typeof update.updateType === "string" ? update.updateType : null),
+                            currentVersion: previous?.currentVersion ?? (typeof currentVersionValue === "string" ? currentVersionValue : null),
+                            currentValue: previous?.currentValue ?? (typeof currentValueValue === "string" ? currentValueValue : null),
+                            currentDigestShort: previous?.currentDigestShort ?? shortenDigest(update.currentDigest ?? dep.currentDigest),
+                            newVersion: previous?.newVersion ?? (typeof update.newVersion === "string" ? update.newVersion : null),
+                            newValue: previous?.newValue ?? (typeof update.newValue === "string" ? update.newValue : null),
+                            newDigestShort: previous?.newDigestShort ?? shortenDigest(update.newDigest),
+                            expectedLabels,
                           });
                         }
                       }
