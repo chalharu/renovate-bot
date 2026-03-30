@@ -7,6 +7,7 @@ on:
       - 'renovate.json5?'
       - '.github/renovate.json5?'
       - '.gitlab/renovate.json5?'
+      - '.github/scripts/**'
       - '.renovaterc'
       - '.renovaterc.json5?'
       - '.github/workflows/ci-config.yaml'
@@ -17,3 +18,13 @@ on:
 jobs:
   build:
     uses: chalharu/workflows/.github/workflows/renovate-ci.yaml@80acd0f7698de276f45e09882e7e86b78ac23ce4 # main
+
+  wait_anchor_regression:
+    name: Wait anchor regression
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Run merge-gate wait-anchor tests
+        run: node --test .github/scripts/renovate-merge-gate-wait.test.js
