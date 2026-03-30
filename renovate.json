@@ -6,6 +6,9 @@
   "pruneStaleBranches": false,
   "separateMajorMinor": true,
   "separateMinorPatch": true,
+  "automerge": true,
+  "automergeStrategy": "auto",
+  "platformAutomerge": false,
   "vulnerabilityAlerts": {
     "enabled": true,
     "labels": [
