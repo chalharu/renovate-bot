@@ -42,11 +42,18 @@ jobs:
         app-id: ${{ secrets.APP_ID }}
         owner: ${{ github.repository_owner }}
 
+    - name: Checkout repository
+      uses: actions/checkout@v4.2.2
+
     - name: Manage Renovate pull requests
       uses: actions/github-script@v8.0.0
       with:
         github-token: ${{ steps.get_token.outputs.token }}
         script: |
+          const path = require("node:path");
+          const { calculateWaitCheckState } = require(
+            path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-wait.js"),
+          );
           const WAIT_CHECK_NAME = "Renovate wait period";
           const SUPPORTED_CONFIG_PATHS = [
             "renovate.json",
@@ -63,6 +70,8 @@ jobs:
           const SUCCESSFUL_STATUS_STATES = new Set(["SUCCESS"]);
           const WAIT_LABELS = new Set(["security"]);
           const WAIT_LABEL_PATTERN = /^renovate-gate-wait-(\d+)d$/;
+          // pruneStaleBranches=false keeps Renovate PRs alive across rebases, so rebases must not reset the gate.
+          const WAIT_PERIOD_STARTS_AT_PULL_REQUEST_CREATION = true;
           const failures = [];
           const summary = {
             repositories: 0,
@@ -839,36 +848,30 @@ jobs:
                   continue;
                 }
 
-                const latestHeadUpdateAt = await getHeadCommitTimestamp({
-                  repository,
-                  ref: pullRequest.head.sha,
+                const latestHeadUpdateAt = !WAIT_PERIOD_STARTS_AT_PULL_REQUEST_CREATION && !isVulnerability
+                  ? await getHeadCommitTimestamp({
+                    repository,
+                    ref: pullRequest.head.sha,
+                  })
+                  : undefined;
+                const waitCheckState = calculateWaitCheckState({
+                  pullRequest,
+                  latestHeadUpdateAt,
+                  isVulnerability,
+                  waitPolicy,
+                  useCreationTime: WAIT_PERIOD_STARTS_AT_PULL_REQUEST_CREATION,
                 });
-                const latestHeadUpdateMs = Date.parse(latestHeadUpdateAt);
-
-                if (Number.isNaN(latestHeadUpdateMs)) {
-                  throw new Error("Unable to calculate wait period from the latest Renovate head commit timestamp");
-                }
-
-                const waitWindowMs = isVulnerability ? 0 : waitPolicy.waitWindowMs;
-                const readyAtMs = latestHeadUpdateMs + waitWindowMs;
-                const waitSatisfied = isVulnerability || Date.now() >= readyAtMs;
-                const waitPeriodLabel = isVulnerability ? "Security update can merge after CI" : waitSatisfied ? `Wait period satisfied from latest update (${waitPolicy.waitDays}d)` : `Waiting ${waitPolicy.waitDays} days from latest update`;
-                const waitPeriodDetails = isVulnerability
-                  ? "This Renovate PR addresses a vulnerability and can merge as soon as the repository CI passes."
-                  : waitSatisfied
-                    ? `The latest Renovate head update was at ${latestHeadUpdateAt}. The configured wait period is ${waitPolicy.waitDays} day(s), so this PR can merge as soon as the repository CI passes.`
-                    : `The latest Renovate head update was at ${latestHeadUpdateAt}. The configured wait period is ${waitPolicy.waitDays} day(s), so this Renovate PR stays pending until ${new Date(readyAtMs).toISOString()}.`;
 
                 await upsertWaitCheck({
                   repository,
                   headSha: pullRequest.head.sha,
-                  status: waitSatisfied ? "completed" : "in_progress",
-                  conclusion: waitSatisfied ? "success" : undefined,
-                  title: waitPeriodLabel,
-                  details: waitPeriodDetails,
+                  status: waitCheckState.waitSatisfied ? "completed" : "in_progress",
+                  conclusion: waitCheckState.waitSatisfied ? "success" : undefined,
+                  title: waitCheckState.waitPeriodLabel,
+                  details: waitCheckState.waitPeriodDetails,
                 });
 
-                if (!waitSatisfied) {
+                if (!waitCheckState.waitSatisfied) {
                   summary.waitingPullRequests += 1;
                   continue;
                 }
