@@ -60,8 +60,47 @@ const filterRunsToDelete = ({ runs = [], cutoff }) => {
 		);
 };
 
+const describeWorkflowRun = (run) => {
+	if (typeof run?.path === "string" && run.path.trim().length > 0) {
+		return run.path.trim();
+	}
+
+	if (typeof run?.name === "string" && run.name.trim().length > 0) {
+		return run.name.trim();
+	}
+
+	if (Number.isInteger(run?.workflow_id)) {
+		return `workflow:${run.workflow_id}`;
+	}
+
+	return "unknown workflow";
+};
+
+const summarizeRunsByWorkflow = ({ runs = [], limit = 10 } = {}) => {
+	const counts = new Map();
+
+	for (const run of Array.isArray(runs) ? runs : []) {
+		const workflow = describeWorkflowRun(run);
+		counts.set(workflow, (counts.get(workflow) ?? 0) + 1);
+	}
+
+	const topWorkflows = [...counts.entries()]
+		.sort(
+			(left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+		)
+		.slice(0, Math.max(0, limit))
+		.map(([workflow, count]) => ({ workflow, count }));
+
+	return {
+		workflowCount: counts.size,
+		topWorkflows,
+	};
+};
+
 module.exports = {
 	computeCutoffDate,
+	describeWorkflowRun,
 	filterRunsToDelete,
 	normalizeKeepDays,
+	summarizeRunsByWorkflow,
 };

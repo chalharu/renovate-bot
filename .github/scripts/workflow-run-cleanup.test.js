@@ -3,8 +3,10 @@ const test = require("node:test");
 
 const {
 	computeCutoffDate,
+	describeWorkflowRun,
 	filterRunsToDelete,
 	normalizeKeepDays,
+	summarizeRunsByWorkflow,
 } = require("./workflow-run-cleanup");
 
 test("normalizes keep_days inputs to a positive integer", () => {
@@ -117,4 +119,61 @@ test("throws a clear error when keep_days would produce an invalid cutoff", () =
 			}),
 		/keep_days must be between 1 and 400/,
 	);
+});
+
+test("describes workflow runs by path, then name, then workflow id", () => {
+	assert.equal(
+		describeWorkflowRun({
+			path: ".github/workflows/renovate.yaml",
+			name: "Renovate",
+			workflow_id: 1,
+		}),
+		".github/workflows/renovate.yaml",
+	);
+	assert.equal(
+		describeWorkflowRun({
+			name: "Renovate config CI",
+			workflow_id: 2,
+		}),
+		"Renovate config CI",
+	);
+	assert.equal(
+		describeWorkflowRun({
+			workflow_id: 3,
+		}),
+		"workflow:3",
+	);
+});
+
+test("summarizes run counts by workflow descriptor", () => {
+	const summary = summarizeRunsByWorkflow({
+		runs: [
+			{
+				id: 1,
+				path: ".github/workflows/renovate.yaml",
+			},
+			{
+				id: 2,
+				path: ".github/workflows/renovate.yaml",
+			},
+			{
+				id: 3,
+				name: "Renovate merge gate",
+			},
+		],
+	});
+
+	assert.deepEqual(summary, {
+		workflowCount: 2,
+		topWorkflows: [
+			{
+				workflow: ".github/workflows/renovate.yaml",
+				count: 2,
+			},
+			{
+				workflow: "Renovate merge gate",
+				count: 1,
+			},
+		],
+	});
 });
