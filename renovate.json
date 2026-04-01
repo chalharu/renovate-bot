@@ -40,6 +40,36 @@
       "addLabels": [
         "renovate-gate-separate-multiple-patch"
       ]
+    },
+    {
+      "description": "Keep multiple Renovate image minor PRs open for this repository",
+      "matchRepositories": [
+        "chalharu/renovate-bot"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/renovatebot/renovate"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "addLabels": [
+        "renovate-gate-separate-multiple-minor"
+      ]
+    },
+    {
+      "description": "Keep multiple Renovate image major PRs open for this repository",
+      "matchRepositories": [
+        "chalharu/renovate-bot"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/renovatebot/renovate"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "addLabels": [
+        "renovate-gate-separate-multiple-major"
+      ]
     }
   ],
   "customManagers": [

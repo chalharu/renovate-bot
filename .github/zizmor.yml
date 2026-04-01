@@ -6,5 +6,5 @@ rules:
       - renovate.yaml:167
       - renovate.yaml:168
       - renovate.yaml:183
-      - renovate-merge-gate.yaml:41
-      - renovate-merge-gate.yaml:42
+      - renovate-merge-gate.yaml:44
+      - renovate-merge-gate.yaml:45
