@@ -20,6 +20,7 @@ jobs:
   build:
     permissions:
       contents: read
+    timeout-minutes: 30
     uses: chalharu/workflows/.github/workflows/renovate-ci.yaml@80acd0f7698de276f45e09882e7e86b78ac23ce4 # main
 
   wait_anchor_regression:
