@@ -1,0 +1,10 @@
+rules:
+  secrets-outside-env:
+    ignore:
+      - renovate.yaml:25
+      - renovate.yaml:26
+      - renovate.yaml:167
+      - renovate.yaml:168
+      - renovate.yaml:183
+      - renovate-merge-gate.yaml:41
+      - renovate-merge-gate.yaml:42
