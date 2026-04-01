@@ -80,13 +80,14 @@ jobs:
               keepDays,
             });
 
+            // GitHub caps repo-level workflow run searches at 1000 results when `status`
+            // is used, so fetch the full history and keep the completed-run filtering local.
             const runs = await github.paginate(
               github.rest.actions.listWorkflowRunsForRepo,
               {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 per_page: 100,
-                status: "completed",
               },
             );
             const scannedRunSummary = summarizeRunsByWorkflow({ runs });
