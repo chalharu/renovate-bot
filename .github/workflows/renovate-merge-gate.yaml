@@ -54,7 +54,7 @@ jobs:
           const { calculateWaitCheckState } = require(
             path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-wait.js"),
           );
-          const { evaluateInactiveBranch } = require(
+          const { buildEffectiveLabelNames, evaluateInactiveBranch } = require(
             path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-inactive-branch.js"),
           );
           const WAIT_CHECK_NAME = "Renovate wait period";
@@ -642,6 +642,11 @@ jobs:
                 }
 
                 summary.renovatePullRequests += 1;
+                const expectedLabels = branchExpectedLabelsByName.get(pullRequest.head.ref) ?? [];
+                let labelNames = buildEffectiveLabelNames({
+                  pullRequest,
+                  expectedLabels,
+                });
 
                 if (activeBranchSet && !activeBranchSet.has(pullRequest.head.ref)) {
                   if (!branchUpdatesKnown && depStates.size === 0) {
@@ -652,6 +657,7 @@ jobs:
                   const inactiveBranchDecision = await evaluateInactiveBranch({
                     pullRequest,
                     depStates,
+                    effectiveLabels: labelNames,
                     tagExistsForVersion,
                   });
 
@@ -669,10 +675,6 @@ jobs:
                     continue;
                   }
                 }
-
-                let labelNames = getPullRequestLabelNames(pullRequest)
-                  .map((label) => label.toLowerCase());
-                const expectedLabels = branchExpectedLabelsByName.get(pullRequest.head.ref) ?? [];
 
                 if (expectedLabels.length > 0) {
                   const reconciliation = await reconcileExpectedLabels({

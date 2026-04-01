@@ -28,6 +28,23 @@ const compareParsedVersions = (left, right) => {
 	return 0;
 };
 
+const normalizeLabelNames = (labels) =>
+	(Array.isArray(labels) ? labels : [])
+		.filter((label) => typeof label === "string" && label.trim().length > 0)
+		.map((label) => label.trim().toLowerCase());
+
+const buildEffectiveLabelNames = ({ pullRequest, expectedLabels = [] }) => {
+	const pullRequestLabels = Array.isArray(pullRequest?.labels)
+		? pullRequest.labels.map((label) =>
+				typeof label === "string" ? label : label?.name,
+			)
+		: [];
+
+	return [
+		...new Set(normalizeLabelNames([...pullRequestLabels, ...expectedLabels])),
+	].sort((left, right) => left.localeCompare(right));
+};
+
 const inferInactiveBranchMetadata = (branchName, depStates = new Map()) => {
 	if (typeof branchName !== "string") {
 		return null;
@@ -90,6 +107,7 @@ const inferInactiveBranchMetadata = (branchName, depStates = new Map()) => {
 const evaluateInactiveBranch = async ({
 	pullRequest,
 	depStates,
+	effectiveLabels = [],
 	tagExistsForVersion = async () => null,
 }) => {
 	const inferred = inferInactiveBranchMetadata(
@@ -132,17 +150,113 @@ const evaluateInactiveBranch = async ({
 	const isPatchLine =
 		targetVersion.major === currentVersion.major &&
 		targetVersion.minor === currentVersion.minor;
+	const hasMultipleMinorLabel = effectiveLabels.includes(
+		"renovate-gate-separate-multiple-minor",
+	);
+	const hasMultipleMajorLabel = effectiveLabels.includes(
+		"renovate-gate-separate-multiple-major",
+	);
+
+	const activeBranches = Array.isArray(depState.branches)
+		? depState.branches
+		: [];
 
 	if (!isPatchLine) {
+		const isMinorLine =
+			targetVersion.major === currentVersion.major &&
+			targetVersion.minor > currentVersion.minor;
+		const isMajorLine = targetVersion.major > currentVersion.major;
+
+		if (hasMultipleMinorLabel && isMinorLine) {
+			const hasActiveMinorOnSameMajor = activeBranches.some((branchUpdate) => {
+				if (
+					branchUpdate.updateType !== "minor" ||
+					typeof branchUpdate.newVersion !== "string"
+				) {
+					return false;
+				}
+
+				const activeTargetVersion = parseNumericVersion(
+					branchUpdate.newVersion,
+				);
+				return (
+					!!activeTargetVersion &&
+					activeTargetVersion.major === currentVersion.major
+				);
+			});
+
+			if (!hasActiveMinorOnSameMajor) {
+				return {
+					keep: false,
+					reason: "no active minor update remains for this dependency major",
+				};
+			}
+
+			const tagExists = await tagExistsForVersion(
+				depState.sourceUrl,
+				inferred.targetVersion,
+			);
+			if (tagExists === false) {
+				return {
+					keep: false,
+					reason: `the target release ${inferred.targetVersion} is no longer available upstream`,
+				};
+			}
+
+			return {
+				keep: true,
+				reason: `custom separateMultipleMinor keeps ${inferred.targetVersion} open while newer minor updates remain available`,
+			};
+		}
+
+		if (hasMultipleMajorLabel && isMajorLine) {
+			const hasActiveMajor = activeBranches.some((branchUpdate) => {
+				if (
+					branchUpdate.updateType !== "major" ||
+					typeof branchUpdate.newVersion !== "string"
+				) {
+					return false;
+				}
+
+				const activeTargetVersion = parseNumericVersion(
+					branchUpdate.newVersion,
+				);
+				return (
+					!!activeTargetVersion &&
+					activeTargetVersion.major > currentVersion.major
+				);
+			});
+
+			if (!hasActiveMajor) {
+				return {
+					keep: false,
+					reason: "no active major update remains for this dependency",
+				};
+			}
+
+			const tagExists = await tagExistsForVersion(
+				depState.sourceUrl,
+				inferred.targetVersion,
+			);
+			if (tagExists === false) {
+				return {
+					keep: false,
+					reason: `the target release ${inferred.targetVersion} is no longer available upstream`,
+				};
+			}
+
+			return {
+				keep: true,
+				reason: `custom separateMultipleMajor keeps ${inferred.targetVersion} open while newer major updates remain available`,
+			};
+		}
+
 		return {
 			keep: false,
 			reason: "the branch is no longer active in the latest Renovate run",
 		};
 	}
 
-	const activeBranches = Array.isArray(depState.branches)
-		? depState.branches
-		: [];
 	const hasActivePatchOnSameLine = activeBranches.some((branchUpdate) => {
 		if (
 			branchUpdate.updateType !== "patch" ||
@@ -184,6 +298,7 @@ const evaluateInactiveBranch = async ({
 };
 
 module.exports = {
+	buildEffectiveLabelNames,
 	evaluateInactiveBranch,
 	inferInactiveBranchMetadata,
 };
