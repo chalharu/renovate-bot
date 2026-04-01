@@ -27,4 +27,4 @@ jobs:
         uses: actions/checkout@v4.2.2
 
       - name: Run merge-gate wait-anchor tests
-        run: node --test .github/scripts/renovate-merge-gate-wait.test.js
+        run: node --test .github/scripts/renovate-merge-gate-*.test.js
