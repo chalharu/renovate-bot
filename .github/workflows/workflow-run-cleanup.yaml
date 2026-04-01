@@ -1,6 +1,11 @@
 name: Workflow run cleanup
 
 on:
+  pull_request:
+    paths:
+      - '.github/scripts/workflow-run-cleanup.js'
+      - '.github/scripts/workflow-run-cleanup.test.js'
+      - '.github/workflows/workflow-run-cleanup.yaml'
   workflow_dispatch:
     inputs:
       keep_days:
@@ -21,7 +26,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate_cleanup_helper:
+    if: github.event_name == 'pull_request'
+    name: validate cleanup helper
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Run cleanup helper tests
+        run: node --test .github/scripts/workflow-run-cleanup.test.js
+
   cleanup_runs:
+    if: github.event_name != 'pull_request'
     name: cleanup runs
     runs-on: ubuntu-latest
     timeout-minutes: 30
