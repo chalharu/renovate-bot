@@ -1,0 +1,171 @@
+name: Workflow run cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_days:
+        description: Retain this many UTC calendar days of completed workflow runs
+        required: false
+        default: '1'
+        type: string
+      dry_run:
+        description: Preview deletions without removing any workflow runs
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: '20 0 * * *'
+
+concurrency:
+  group: workflow-run-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup_runs:
+    name: cleanup runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Delete old workflow runs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const path = require("node:path");
+            const {
+              computeCutoffDate,
+              filterRunsToDelete,
+              normalizeKeepDays,
+            } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/workflow-run-cleanup.js"),
+            );
+
+            const keepDays = normalizeKeepDays(context.payload.inputs?.keep_days, {
+              fallback: 1,
+            });
+            const dryRun =
+              String(context.payload.inputs?.dry_run ?? "false").toLowerCase() === "true";
+            const cutoff = computeCutoffDate({
+              now: new Date(),
+              keepDays,
+            });
+
+            const workflows = await github.paginate(
+              "GET /repos/{owner}/{repo}/actions/workflows",
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              },
+              (response) => response.data.workflows ?? [],
+            );
+
+            const summary = {
+              workflows: workflows.length,
+              scannedRuns: 0,
+              targetedRuns: 0,
+              deletedRuns: 0,
+              dryRun,
+            };
+            const targetedRunUrls = [];
+
+            for (const workflow of workflows) {
+              const runs = await github.paginate(
+                "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: workflow.id,
+                  per_page: 100,
+                },
+                (response) => response.data.workflow_runs ?? [],
+              );
+
+              summary.scannedRuns += runs.length;
+
+              const deletableRuns = filterRunsToDelete({
+                runs,
+                cutoff,
+              });
+              summary.targetedRuns += deletableRuns.length;
+
+              for (const run of deletableRuns) {
+                if (targetedRunUrls.length < 50 && typeof run.html_url === "string") {
+                  targetedRunUrls.push(run.html_url);
+                }
+
+                if (dryRun) {
+                  continue;
+                }
+
+                try {
+                  await github.request("DELETE /repos/{owner}/{repo}/actions/runs/{run_id}", {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: run.id,
+                  });
+                  summary.deletedRuns += 1;
+                } catch (error) {
+                  if (error.status === 404) {
+                    core.warning(`Workflow run ${run.id} was already deleted before cleanup reached it`);
+                    continue;
+                  }
+
+                  throw error;
+                }
+              }
+            }
+
+            core.setOutput("cutoff", cutoff.toISOString());
+            core.setOutput("deleted_runs", String(summary.deletedRuns));
+            core.setOutput("targeted_runs", String(summary.targetedRuns));
+
+            const resultsLabel = dryRun ? "Previewed runs" : "Deleted runs";
+            await core.summary
+              .addHeading("Workflow run cleanup")
+              .addTable([
+                [
+                  { data: "Retained UTC days", header: true },
+                  { data: String(keepDays), header: false },
+                ],
+                [
+                  { data: "Cutoff", header: true },
+                  { data: cutoff.toISOString(), header: false },
+                ],
+                [
+                  { data: "Workflows scanned", header: true },
+                  { data: String(summary.workflows), header: false },
+                ],
+                [
+                  { data: "Runs scanned", header: true },
+                  { data: String(summary.scannedRuns), header: false },
+                ],
+                [
+                  { data: "Targeted runs", header: true },
+                  { data: String(summary.targetedRuns), header: false },
+                ],
+                [
+                  { data: resultsLabel, header: true },
+                  { data: String(dryRun ? summary.targetedRuns : summary.deletedRuns), header: false },
+                ],
+              ])
+              .addRaw(targetedRunUrls.length > 0 ? "\nTargeted run URLs:\n" : "\nNo runs matched the cleanup cutoff.\n")
+              .addList(targetedRunUrls)
+              .write();
+
+            if (dryRun) {
+              core.notice(
+                `Dry run complete: ${summary.targetedRuns} completed workflow runs are older than ${cutoff.toISOString()}`,
+              );
+            } else {
+              core.notice(
+                `Deleted ${summary.deletedRuns} completed workflow runs older than ${cutoff.toISOString()}`,
+              );
+            }

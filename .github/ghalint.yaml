@@ -6,3 +6,8 @@ excludes:
     workflow_file_path: .github/workflows/renovate-merge-gate.yaml
     job_name: manage_gate
     step_id: get_token
+  # The reusable workflow caller cannot enforce timeout-minutes itself; that must
+  # be defined inside the called workflow.
+  - policy_name: job_timeout_minutes_is_required
+    workflow_file_path: .github/workflows/ci-config.yaml
+    job_name: build
