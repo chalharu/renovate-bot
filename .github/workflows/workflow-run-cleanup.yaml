@@ -65,6 +65,7 @@ jobs:
               computeCutoffDate,
               filterRunsToDelete,
               normalizeKeepDays,
+              summarizeRunsByWorkflow,
             } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/workflow-run-cleanup.js"),
             );
@@ -79,69 +80,57 @@ jobs:
               keepDays,
             });
 
-            const workflows = await github.paginate(
-              "GET /repos/{owner}/{repo}/actions/workflows",
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRunsForRepo,
               {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 per_page: 100,
+                status: "completed",
               },
-              (response) => response.data.workflows ?? [],
             );
+            const scannedRunSummary = summarizeRunsByWorkflow({ runs });
+            const deletableRuns = filterRunsToDelete({
+              runs,
+              cutoff,
+            });
+            const targetedRunSummary = summarizeRunsByWorkflow({
+              runs: deletableRuns,
+            });
 
             const summary = {
-              workflows: workflows.length,
-              scannedRuns: 0,
-              targetedRuns: 0,
+              workflows: scannedRunSummary.workflowCount,
+              scannedRuns: runs.length,
+              targetedWorkflows: targetedRunSummary.workflowCount,
+              targetedRuns: deletableRuns.length,
               deletedRuns: 0,
               dryRun,
             };
             const targetedRunUrls = [];
 
-            for (const workflow of workflows) {
-              const runs = await github.paginate(
-                "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
-                {
+            for (const run of deletableRuns) {
+              if (targetedRunUrls.length < 50 && typeof run.html_url === "string") {
+                targetedRunUrls.push(run.html_url);
+              }
+
+              if (dryRun) {
+                continue;
+              }
+
+              try {
+                await github.request("DELETE /repos/{owner}/{repo}/actions/runs/{run_id}", {
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  workflow_id: workflow.id,
-                  per_page: 100,
-                },
-                (response) => response.data.workflow_runs ?? [],
-              );
-
-              summary.scannedRuns += runs.length;
-
-              const deletableRuns = filterRunsToDelete({
-                runs,
-                cutoff,
-              });
-              summary.targetedRuns += deletableRuns.length;
-
-              for (const run of deletableRuns) {
-                if (targetedRunUrls.length < 50 && typeof run.html_url === "string") {
-                  targetedRunUrls.push(run.html_url);
-                }
-
-                if (dryRun) {
+                  run_id: run.id,
+                });
+                summary.deletedRuns += 1;
+              } catch (error) {
+                if (error.status === 404) {
+                  core.warning(`Workflow run ${run.id} was already deleted before cleanup reached it`);
                   continue;
                 }
 
-                try {
-                  await github.request("DELETE /repos/{owner}/{repo}/actions/runs/{run_id}", {
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    run_id: run.id,
-                  });
-                  summary.deletedRuns += 1;
-                } catch (error) {
-                  if (error.status === 404) {
-                    core.warning(`Workflow run ${run.id} was already deleted before cleanup reached it`);
-                    continue;
-                  }
-
-                  throw error;
-                }
+                throw error;
               }
             }
 
@@ -170,6 +159,10 @@ jobs:
                   { data: String(summary.scannedRuns), header: false },
                 ],
                 [
+                  { data: "Targeted workflows", header: true },
+                  { data: String(summary.targetedWorkflows), header: false },
+                ],
+                [
                   { data: "Targeted runs", header: true },
                   { data: String(summary.targetedRuns), header: false },
                 ],
@@ -178,7 +171,17 @@ jobs:
                   { data: String(dryRun ? summary.targetedRuns : summary.deletedRuns), header: false },
                 ],
               ])
-              .addRaw(targetedRunUrls.length > 0 ? "\nTargeted run URLs:\n" : "\nNo runs matched the cleanup cutoff.\n")
+              .addRaw(
+                targetedRunSummary.topWorkflows.length > 0
+                  ? "\nTop targeted workflows:\n"
+                  : "\nNo runs matched the cleanup cutoff.\n",
+              )
+              .addList(
+                targetedRunSummary.topWorkflows.map(
+                  ({ workflow, count }) => `${workflow}: ${count}`,
+                ),
+              )
+              .addRaw(targetedRunUrls.length > 0 ? "\nTargeted run URLs:\n" : "")
               .addList(targetedRunUrls)
               .write();
 
