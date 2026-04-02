@@ -3,11 +3,13 @@ const test = require("node:test");
 
 const {
 	buildCreatedBeforeFilter,
+	computeRemainingTargetedRunBudget,
 	computeCutoffDate,
 	describeWorkflowRun,
 	filterRunsToDelete,
 	normalizeBatchSize,
 	normalizeKeepDays,
+	normalizeTargetedRunCount,
 	shouldContinueCleanup,
 	summarizeRunsByWorkflow,
 } = require("./workflow-run-cleanup");
@@ -41,6 +43,22 @@ test("rejects batch_size values that exceed the supported maximum", () => {
 	assert.throws(
 		() => normalizeBatchSize("1001"),
 		/batch_size must be between 1 and 1000/,
+	);
+});
+
+test("normalizes targeted_runs_so_far inputs to a non-negative integer", () => {
+	assert.equal(normalizeTargetedRunCount("2500"), 2500);
+	assert.equal(normalizeTargetedRunCount(25), 25);
+	assert.equal(normalizeTargetedRunCount("0"), 0);
+	assert.equal(normalizeTargetedRunCount("-1"), 0);
+	assert.equal(normalizeTargetedRunCount("abc"), 0);
+	assert.equal(normalizeTargetedRunCount(undefined, { fallback: 75 }), 75);
+});
+
+test("rejects targeted_runs_so_far values that exceed the supported maximum", () => {
+	assert.throws(
+		() => normalizeTargetedRunCount("3001"),
+		/targeted_runs_so_far must be between 0 and 3000/,
 	);
 });
 
@@ -159,6 +177,23 @@ test("rejects invalid created-filter cutoffs", () => {
 	);
 });
 
+test("computes the remaining targeted-run budget for a cleanup chain", () => {
+	assert.equal(
+		computeRemainingTargetedRunBudget({
+			targetLimit: 3000,
+			targetedRuns: 2500,
+		}),
+		500,
+	);
+	assert.equal(
+		computeRemainingTargetedRunBudget({
+			targetLimit: 3000,
+			targetedRuns: 3000,
+		}),
+		0,
+	);
+});
+
 test("describes workflow runs by path, then name, then workflow id", () => {
 	assert.equal(
 		describeWorkflowRun({
@@ -264,6 +299,17 @@ test("continues cleanup only when another pass can make progress", () => {
 			batchSize: 100,
 			oldRunTotalCount: 25,
 			scannedRuns: 25,
+		}),
+		false,
+	);
+	assert.equal(
+		shouldContinueCleanup({
+			dryRun: false,
+			deletedRuns: 100,
+			batchSize: 100,
+			oldRunTotalCount: 500,
+			remainingTargetBudget: 0,
+			scannedRuns: 100,
 		}),
 		false,
 	);
