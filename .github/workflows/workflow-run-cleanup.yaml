@@ -7,31 +7,11 @@ on:
         required: false
         default: '1'
         type: string
-      batch_size:
-        description: Maximum old workflow runs to delete in one cleanup pass
-        required: false
-        default: '500'
-        type: string
       dry_run:
         description: Preview deletions without removing any workflow runs
         required: false
         default: false
         type: boolean
-      continue_cleanup:
-        description: Queue another cleanup pass automatically when more old runs remain
-        required: false
-        default: true
-        type: boolean
-      chain_depth:
-        description: Internal follow-up depth for chained cleanup passes
-        required: false
-        default: '0'
-        type: string
-      targeted_runs_so_far:
-        description: Internal count of workflow runs already targeted by the current cleanup chain
-        required: false
-        default: '0'
-        type: string
   schedule:
     - cron: '20 */6 * * *'
 concurrency:
@@ -55,19 +35,16 @@ jobs:
         with:
           script: |
             const path = require("node:path");
-            const WORKFLOW_FILE = "workflow-run-cleanup.yaml";
             const MAX_SEARCH_PAGES = 10;
-            const MAX_TARGETED_RUNS_PER_CHAIN = 3000;
+            const MAX_TARGETED_RUNS_PER_RUN = 3000;
             const PER_PAGE = 100;
+            const SEARCH_WINDOW_LIMIT = MAX_SEARCH_PAGES * PER_PAGE;
             const {
               buildCreatedBeforeFilter,
               computeRemainingTargetedRunBudget,
               computeCutoffDate,
               filterRunsToDelete,
-              normalizeBatchSize,
               normalizeKeepDays,
-              normalizeTargetedRunCount,
-              shouldContinueCleanup,
               summarizeRunsByWorkflow,
             } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/workflow-run-cleanup.js"),
@@ -77,180 +54,151 @@ jobs:
             const keepDays = normalizeKeepDays(inputSource.keep_days, {
               fallback: 1,
             });
-            const batchSize = normalizeBatchSize(inputSource.batch_size, {
-              fallback: 500,
-            });
             const dryRun =
               String(inputSource.dry_run ?? "false").toLowerCase() === "true";
-            const continueCleanup =
-              String(inputSource.continue_cleanup ?? "true").toLowerCase() !== "false";
-            const parsedChainDepth = Number.parseInt(String(inputSource.chain_depth ?? "0"), 10);
-            const chainDepth =
-              Number.isInteger(parsedChainDepth) && parsedChainDepth >= 0
-                ? parsedChainDepth
-                : 0;
-            const targetedRunsSoFar = normalizeTargetedRunCount(
-              inputSource.targeted_runs_so_far,
-              {
-                fallback: 0,
-                maximum: MAX_TARGETED_RUNS_PER_CHAIN,
-              },
-            );
-            const remainingTargetBudgetBeforePass = computeRemainingTargetedRunBudget({
-              targetLimit: MAX_TARGETED_RUNS_PER_CHAIN,
-              targetedRuns: targetedRunsSoFar,
-            });
             const cutoff = computeCutoffDate({
               now: new Date(),
               keepDays,
             });
             const created = buildCreatedBeforeFilter({ cutoff });
-            const effectiveBatchSize = Math.min(
-              batchSize,
-              remainingTargetBudgetBeforePass,
-            );
-
-            const candidateRuns = [];
+            const targetedRuns = [];
+            const targetedRunUrls = [];
+            let deletedRuns = 0;
             let oldRunTotalCount = 0;
             let scannedRuns = 0;
             let pagesScanned = 0;
+            let windowsProcessed = 0;
 
-            // GitHub caps repository run searches at 1000 results when date filters are used.
-            // Drain that visible "old run" window in bounded batches and queue follow-up passes
-            // so cleanup keeps making progress without scanning the full repository history.
-            for (let page = 1; page <= MAX_SEARCH_PAGES && candidateRuns.length < effectiveBatchSize; page += 1) {
-              const response = await github.rest.actions.listWorkflowRunsForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                per_page: PER_PAGE,
-                page,
-                created,
+            while (true) {
+              const remainingTargetBudget = computeRemainingTargetedRunBudget({
+                targetLimit: MAX_TARGETED_RUNS_PER_RUN,
+                targetedRuns: targetedRuns.length,
               });
-              const runs = response.data.workflow_runs ?? [];
-
-              if (page === 1) {
-                oldRunTotalCount = response.data.total_count ?? 0;
-              }
-
-              if (runs.length === 0) {
-                break;
-              }
-
-              scannedRuns += runs.length;
-              pagesScanned = page;
-              candidateRuns.push(
-                ...filterRunsToDelete({
-                  runs,
-                  cutoff,
-                }),
+              const windowTargetLimit = Math.min(
+                remainingTargetBudget,
+                SEARCH_WINDOW_LIMIT,
               );
 
-              if (runs.length < PER_PAGE) {
+              if (remainingTargetBudget < 1) {
                 break;
               }
-            }
 
-            const deletableRuns = [...candidateRuns]
-              .sort(
-                (left, right) =>
-                  Date.parse(left.updated_at) - Date.parse(right.updated_at),
-              )
-              .slice(0, effectiveBatchSize);
-            const targetedRunsAfterPass = targetedRunsSoFar + deletableRuns.length;
-            const remainingTargetBudgetAfterPass = Math.max(
-              0,
-              MAX_TARGETED_RUNS_PER_CHAIN - targetedRunsAfterPass,
-            );
-            const targetedRunSummary = summarizeRunsByWorkflow({
-              runs: deletableRuns,
-            });
+              const candidateRuns = [];
+              let windowOldRunTotalCount = 0;
+              let windowScannedRuns = 0;
+              let windowPagesScanned = 0;
 
-            const summary = {
-              batchSize,
-              effectiveBatchSize,
-              chainDepth,
-              continueCleanup,
-              createdFilter: created,
-              oldRunTotalCount,
-              pagesScanned,
-              scannedRuns,
-              targetLimit: MAX_TARGETED_RUNS_PER_CHAIN,
-              targetedRunsBeforePass: targetedRunsSoFar,
-              targetedRunsAfterPass,
-              remainingTargetBudget: remainingTargetBudgetAfterPass,
-              targetLimitReached: remainingTargetBudgetAfterPass === 0,
-              targetedWorkflows: targetedRunSummary.workflowCount,
-              targetedRuns: deletableRuns.length,
-              deletedRuns: 0,
-              dryRun,
-              queuedFollowUp: false,
-            };
-            const targetedRunUrls = [];
-
-            for (const run of deletableRuns) {
-              if (targetedRunUrls.length < 50 && typeof run.html_url === "string") {
-                targetedRunUrls.push(run.html_url);
-              }
-
-              if (dryRun) {
-                continue;
-              }
-
-              try {
-                await github.request("DELETE /repos/{owner}/{repo}/actions/runs/{run_id}", {
+              // GitHub caps repository run searches at 1000 results when date filters are used.
+              // Re-fetch that visible window inside the same job after each delete pass so one run
+              // can keep making progress until it hits the per-run cleanup cap.
+              for (let page = 1; page <= MAX_SEARCH_PAGES && candidateRuns.length < windowTargetLimit; page += 1) {
+                const response = await github.rest.actions.listWorkflowRunsForRepo({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  run_id: run.id,
+                  per_page: PER_PAGE,
+                  page,
+                  created,
                 });
-                summary.deletedRuns += 1;
-              } catch (error) {
-                if (error.status === 404) {
-                  core.warning(`Workflow run ${run.id} was already deleted before cleanup reached it`);
+                const runs = response.data.workflow_runs ?? [];
+
+                if (page === 1) {
+                  windowOldRunTotalCount = response.data.total_count ?? 0;
+                }
+
+                if (runs.length === 0) {
+                  break;
+                }
+
+                windowScannedRuns += runs.length;
+                windowPagesScanned = page;
+                candidateRuns.push(
+                  ...filterRunsToDelete({
+                    runs,
+                    cutoff,
+                  }),
+                );
+
+                if (runs.length < PER_PAGE) {
+                  break;
+                }
+              }
+
+              if (windowsProcessed === 0) {
+                oldRunTotalCount = windowOldRunTotalCount;
+              }
+
+              scannedRuns += windowScannedRuns;
+              pagesScanned += windowPagesScanned;
+
+              if (candidateRuns.length === 0) {
+                break;
+              }
+
+              const deletableRuns = [...candidateRuns]
+                .sort(
+                  (left, right) =>
+                    Date.parse(left.updated_at) - Date.parse(right.updated_at),
+                )
+                .slice(0, windowTargetLimit);
+
+              windowsProcessed += 1;
+
+              for (const run of deletableRuns) {
+                targetedRuns.push(run);
+
+                if (targetedRunUrls.length < 50 && typeof run.html_url === "string") {
+                  targetedRunUrls.push(run.html_url);
+                }
+
+                if (dryRun) {
                   continue;
                 }
 
-                throw error;
+                try {
+                  await github.request("DELETE /repos/{owner}/{repo}/actions/runs/{run_id}", {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: run.id,
+                  });
+                  deletedRuns += 1;
+                } catch (error) {
+                  if (error.status === 404) {
+                    core.warning(`Workflow run ${run.id} was already deleted before cleanup reached it`);
+                    continue;
+                  }
+
+                  throw error;
+                }
+              }
+
+              if (dryRun) {
+                break;
               }
             }
+
+            const targetedRunSummary = summarizeRunsByWorkflow({
+              runs: targetedRuns,
+            });
+            const summary = {
+              createdFilter: created,
+              dryRun,
+              oldRunTotalCount,
+              pagesScanned,
+              scannedRuns,
+              searchWindowLimit: SEARCH_WINDOW_LIMIT,
+              targetLimit: MAX_TARGETED_RUNS_PER_RUN,
+              targetLimitReached: targetedRuns.length >= MAX_TARGETED_RUNS_PER_RUN,
+              targetedWorkflows: targetedRunSummary.workflowCount,
+              targetedRuns: targetedRuns.length,
+              deletedRuns,
+              windowsProcessed,
+            };
 
             core.setOutput("cutoff", cutoff.toISOString());
             core.setOutput("deleted_runs", String(summary.deletedRuns));
             core.setOutput("targeted_runs", String(summary.targetedRuns));
-            core.setOutput("remaining_target_budget", String(summary.remainingTargetBudget));
             core.setOutput("target_limit_reached", String(summary.targetLimitReached));
-
-            if (
-              continueCleanup &&
-              shouldContinueCleanup({
-                dryRun,
-                deletedRuns: summary.deletedRuns,
-                batchSize: effectiveBatchSize,
-                oldRunTotalCount,
-                remainingTargetBudget: remainingTargetBudgetAfterPass,
-                scannedRuns,
-              })
-            ) {
-              const ref = context.ref.replace(/^refs\/heads\//, "");
-
-              await github.rest.actions.createWorkflowDispatch({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: WORKFLOW_FILE,
-                ref,
-                inputs: {
-                  keep_days: String(keepDays),
-                  batch_size: String(batchSize),
-                  dry_run: "false",
-                  continue_cleanup: "true",
-                  chain_depth: String(chainDepth + 1),
-                  targeted_runs_so_far: String(targetedRunsAfterPass),
-                },
-              });
-
-              summary.queuedFollowUp = true;
-            }
-
-            core.setOutput("queued_follow_up", String(summary.queuedFollowUp));
+            core.setOutput("windows_processed", String(summary.windowsProcessed));
 
             const resultsLabel = dryRun ? "Previewed runs" : "Deleted runs";
             await core.summary
@@ -265,39 +213,31 @@ jobs:
                   { data: cutoff.toISOString(), header: false },
                 ],
                 [
-                  { data: "Requested batch size", header: true },
-                  { data: String(summary.batchSize), header: false },
+                  { data: "Search window size", header: true },
+                  { data: String(summary.searchWindowLimit), header: false },
                 ],
                 [
-                  { data: "Effective batch size", header: true },
-                  { data: String(summary.effectiveBatchSize), header: false },
-                ],
-                [
-                  { data: "Chain depth", header: true },
-                  { data: String(summary.chainDepth), header: false },
-                ],
-                [
-                  { data: "Chain target limit", header: true },
+                  { data: "Per-run target limit", header: true },
                   { data: String(summary.targetLimit), header: false },
-                ],
-                [
-                  { data: "Targeted runs before pass", header: true },
-                  { data: String(summary.targetedRunsBeforePass), header: false },
                 ],
                 [
                   { data: "Created filter", header: true },
                   { data: summary.createdFilter, header: false },
                 ],
                 [
-                  { data: "Old-run search total", header: true },
+                  { data: "Initial old-run search total", header: true },
                   { data: String(summary.oldRunTotalCount), header: false },
+                ],
+                [
+                  { data: "Windows processed", header: true },
+                  { data: String(summary.windowsProcessed), header: false },
                 ],
                 [
                   { data: "Pages scanned", header: true },
                   { data: String(summary.pagesScanned), header: false },
                 ],
                 [
-                  { data: "Runs scanned this pass", header: true },
+                  { data: "Runs scanned this run", header: true },
                   { data: String(summary.scannedRuns), header: false },
                 ],
                 [
@@ -309,24 +249,12 @@ jobs:
                   { data: String(summary.targetedRuns), header: false },
                 ],
                 [
-                  { data: "Targeted runs in chain", header: true },
-                  { data: String(summary.targetedRunsAfterPass), header: false },
-                ],
-                [
                   { data: resultsLabel, header: true },
                   { data: String(dryRun ? summary.targetedRuns : summary.deletedRuns), header: false },
                 ],
                 [
-                  { data: "Remaining target budget", header: true },
-                  { data: String(summary.remainingTargetBudget), header: false },
-                ],
-                [
                   { data: "Target limit reached", header: true },
                   { data: String(summary.targetLimitReached), header: false },
-                ],
-                [
-                  { data: "Follow-up queued", header: true },
-                  { data: String(summary.queuedFollowUp), header: false },
                 ],
               ])
               .addRaw(
@@ -347,13 +275,9 @@ jobs:
               core.notice(
                 `Dry run complete: ${summary.targetedRuns} completed workflow runs are older than ${cutoff.toISOString()}`,
               );
-            } else if (summary.queuedFollowUp) {
-              core.notice(
-                `Deleted ${summary.deletedRuns} completed workflow runs older than ${cutoff.toISOString()} and queued a follow-up cleanup pass (${summary.remainingTargetBudget} targeted-run budget remaining in this chain)`,
-              );
             } else if (summary.targetLimitReached) {
               core.notice(
-                `Deleted ${summary.deletedRuns} completed workflow runs older than ${cutoff.toISOString()} and reached the per-chain cap of ${summary.targetLimit} targeted runs`,
+                `Deleted ${summary.deletedRuns} completed workflow runs older than ${cutoff.toISOString()} and reached the per-run cap of ${summary.targetLimit} targeted runs`,
               );
             } else {
               core.notice(
