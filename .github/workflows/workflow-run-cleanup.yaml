@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       keep_days:
-        description: Retain this many UTC calendar days of completed workflow runs
+        description: Retain this many trailing 24-hour periods of completed workflow runs
         required: false
         default: '1'
         type: string
@@ -205,7 +205,7 @@ jobs:
               .addHeading("Workflow run cleanup")
               .addTable([
                 [
-                  { data: "Retained UTC days", header: true },
+                  { data: "Retained 24-hour periods", header: true },
                   { data: String(keepDays), header: false },
                 ],
                 [

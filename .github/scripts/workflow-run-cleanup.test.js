@@ -44,22 +44,22 @@ test("rejects targeted run counts that exceed the supported maximum", () => {
 	);
 });
 
-test("computes the cutoff from the start of the current UTC day", () => {
+test("computes the cutoff exactly 24 hours before now for keep_days=1", () => {
 	const cutoff = computeCutoffDate({
 		now: new Date("2026-04-01T21:34:19.436Z"),
 		keepDays: 1,
 	});
 
-	assert.equal(cutoff.toISOString(), "2026-04-01T00:00:00.000Z");
+	assert.equal(cutoff.toISOString(), "2026-03-31T21:34:19.436Z");
 });
 
-test("extends the cutoff backward when keeping multiple UTC days", () => {
+test("extends the cutoff backward by keep_days * 24 hours", () => {
 	const cutoff = computeCutoffDate({
 		now: new Date("2026-04-01T21:34:19.436Z"),
 		keepDays: 3,
 	});
 
-	assert.equal(cutoff.toISOString(), "2026-03-30T00:00:00.000Z");
+	assert.equal(cutoff.toISOString(), "2026-03-29T21:34:19.436Z");
 });
 
 test("filters only completed runs older than the cutoff", () => {
@@ -99,6 +99,34 @@ test("filters only completed runs older than the cutoff", () => {
 	assert.deepEqual(
 		deletableRuns.map((run) => run.id),
 		[5, 1],
+	);
+});
+
+test("retains completed runs updated exactly at the cutoff time", () => {
+	const deletableRuns = filterRunsToDelete({
+		runs: [
+			{
+				id: 1,
+				status: "completed",
+				updated_at: "2026-03-31T21:34:19.435Z",
+			},
+			{
+				id: 2,
+				status: "completed",
+				updated_at: "2026-03-31T21:34:19.436Z",
+			},
+			{
+				id: 3,
+				status: "completed",
+				updated_at: "2026-03-31T21:34:19.437Z",
+			},
+		],
+		cutoff: new Date("2026-03-31T21:34:19.436Z"),
+	});
+
+	assert.deepEqual(
+		deletableRuns.map((run) => run.id),
+		[1],
 	);
 });
 
@@ -143,9 +171,9 @@ test("throws a clear error when keep_days would produce an invalid cutoff", () =
 test("builds a created filter from the cleanup cutoff", () => {
 	assert.equal(
 		buildCreatedBeforeFilter({
-			cutoff: new Date("2026-04-02T00:00:00.000Z"),
+			cutoff: new Date("2026-04-02T12:34:56.789Z"),
 		}),
-		"<2026-04-02T00:00:00.000Z",
+		"<2026-04-02T12:34:56.789Z",
 	);
 });
 
