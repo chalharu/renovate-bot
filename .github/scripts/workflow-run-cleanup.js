@@ -14,6 +14,20 @@ const normalizeKeepDays = (value, { fallback = 1, maximum = 400 } = {}) => {
 	return parsed;
 };
 
+const normalizeBatchSize = (value, { fallback = 500, maximum = 1000 } = {}) => {
+	const parsed = Number.parseInt(String(value ?? ""), 10);
+
+	if (!Number.isInteger(parsed) || parsed < 1) {
+		return fallback;
+	}
+
+	if (parsed > maximum) {
+		throw new Error(`batch_size must be between 1 and ${maximum}`);
+	}
+
+	return parsed;
+};
+
 const computeCutoffDate = ({ now = new Date(), keepDays = 1 } = {}) => {
 	const normalizedKeepDays = normalizeKeepDays(keepDays);
 	const startOfCurrentUtcDay = Date.UTC(
@@ -76,6 +90,19 @@ const describeWorkflowRun = (run) => {
 	return "unknown workflow";
 };
 
+const buildCreatedBeforeFilter = ({ cutoff }) => {
+	const cutoffMs =
+		cutoff instanceof Date ? cutoff.getTime() : Date.parse(cutoff ?? "");
+
+	if (!Number.isFinite(cutoffMs)) {
+		throw new Error(
+			"A valid cutoff date is required to build a created filter",
+		);
+	}
+
+	return `<${new Date(cutoffMs).toISOString()}`;
+};
+
 const summarizeRunsByWorkflow = ({ runs = [], limit = 10 } = {}) => {
 	const counts = new Map();
 
@@ -97,10 +124,33 @@ const summarizeRunsByWorkflow = ({ runs = [], limit = 10 } = {}) => {
 	};
 };
 
+const shouldContinueCleanup = ({
+	dryRun = false,
+	deletedRuns = 0,
+	batchSize = 0,
+	oldRunTotalCount = 0,
+	scannedRuns = 0,
+} = {}) => {
+	if (dryRun || deletedRuns < 1) {
+		return false;
+	}
+
+	if (oldRunTotalCount > scannedRuns) {
+		return true;
+	}
+
+	return (
+		Number.isInteger(batchSize) && batchSize > 0 && deletedRuns >= batchSize
+	);
+};
+
 module.exports = {
+	buildCreatedBeforeFilter,
 	computeCutoffDate,
 	describeWorkflowRun,
 	filterRunsToDelete,
+	normalizeBatchSize,
 	normalizeKeepDays,
+	shouldContinueCleanup,
 	summarizeRunsByWorkflow,
 };
