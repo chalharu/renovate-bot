@@ -2,10 +2,13 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+	buildCreatedBeforeFilter,
 	computeCutoffDate,
 	describeWorkflowRun,
 	filterRunsToDelete,
+	normalizeBatchSize,
 	normalizeKeepDays,
+	shouldContinueCleanup,
 	summarizeRunsByWorkflow,
 } = require("./workflow-run-cleanup");
 
@@ -22,6 +25,22 @@ test("rejects keep_days values that exceed the supported maximum", () => {
 	assert.throws(
 		() => normalizeKeepDays("401"),
 		/keep_days must be between 1 and 400/,
+	);
+});
+
+test("normalizes batch_size inputs to a positive integer", () => {
+	assert.equal(normalizeBatchSize("250"), 250);
+	assert.equal(normalizeBatchSize(75), 75);
+	assert.equal(normalizeBatchSize("0"), 500);
+	assert.equal(normalizeBatchSize("-1"), 500);
+	assert.equal(normalizeBatchSize("abc"), 500);
+	assert.equal(normalizeBatchSize(undefined, { fallback: 25 }), 25);
+});
+
+test("rejects batch_size values that exceed the supported maximum", () => {
+	assert.throws(
+		() => normalizeBatchSize("1001"),
+		/batch_size must be between 1 and 1000/,
 	);
 });
 
@@ -121,6 +140,25 @@ test("throws a clear error when keep_days would produce an invalid cutoff", () =
 	);
 });
 
+test("builds a created filter from the cleanup cutoff", () => {
+	assert.equal(
+		buildCreatedBeforeFilter({
+			cutoff: new Date("2026-04-02T00:00:00.000Z"),
+		}),
+		"<2026-04-02T00:00:00.000Z",
+	);
+});
+
+test("rejects invalid created-filter cutoffs", () => {
+	assert.throws(
+		() =>
+			buildCreatedBeforeFilter({
+				cutoff: "not-a-date",
+			}),
+		/A valid cutoff date is required to build a created filter/,
+	);
+});
+
 test("describes workflow runs by path, then name, then workflow id", () => {
 	assert.equal(
 		describeWorkflowRun({
@@ -176,4 +214,57 @@ test("summarizes run counts by workflow descriptor", () => {
 			},
 		],
 	});
+});
+
+test("continues cleanup only when another pass can make progress", () => {
+	assert.equal(
+		shouldContinueCleanup({
+			dryRun: true,
+			deletedRuns: 10,
+			batchSize: 100,
+			oldRunTotalCount: 500,
+			scannedRuns: 100,
+		}),
+		false,
+	);
+	assert.equal(
+		shouldContinueCleanup({
+			dryRun: false,
+			deletedRuns: 0,
+			batchSize: 100,
+			oldRunTotalCount: 500,
+			scannedRuns: 100,
+		}),
+		false,
+	);
+	assert.equal(
+		shouldContinueCleanup({
+			dryRun: false,
+			deletedRuns: 50,
+			batchSize: 100,
+			oldRunTotalCount: 500,
+			scannedRuns: 100,
+		}),
+		true,
+	);
+	assert.equal(
+		shouldContinueCleanup({
+			dryRun: false,
+			deletedRuns: 100,
+			batchSize: 100,
+			oldRunTotalCount: 100,
+			scannedRuns: 100,
+		}),
+		true,
+	);
+	assert.equal(
+		shouldContinueCleanup({
+			dryRun: false,
+			deletedRuns: 25,
+			batchSize: 100,
+			oldRunTotalCount: 25,
+			scannedRuns: 25,
+		}),
+		false,
+	);
 });
