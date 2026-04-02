@@ -33,15 +33,8 @@ const normalizeTargetedRunCount = (
 
 const computeCutoffDate = ({ now = new Date(), keepDays = 1 } = {}) => {
 	const normalizedKeepDays = normalizeKeepDays(keepDays);
-	const startOfCurrentUtcDay = Date.UTC(
-		now.getUTCFullYear(),
-		now.getUTCMonth(),
-		now.getUTCDate(),
-	);
-
-	const cutoff = new Date(
-		startOfCurrentUtcDay - (normalizedKeepDays - 1) * MILLISECONDS_PER_DAY,
-	);
+	const nowMs = now instanceof Date ? now.getTime() : Date.parse(now ?? "");
+	const cutoff = new Date(nowMs - normalizedKeepDays * MILLISECONDS_PER_DAY);
 
 	if (!Number.isFinite(cutoff.getTime())) {
 		throw new Error("Unable to calculate a valid cleanup cutoff date");
