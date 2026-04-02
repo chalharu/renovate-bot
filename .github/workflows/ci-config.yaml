@@ -11,6 +11,7 @@ on:
       - '.renovaterc'
       - '.renovaterc.json5?'
       - '.github/workflows/ci-config.yaml'
+      - '.github/workflows/workflow-run-cleanup.yaml'
       - '.github/workflows/renovate-merge-gate.yaml'
       - '.github/workflows/renovate.yaml'
       - 'package.json'
@@ -28,3 +29,6 @@ jobs:
 
       - name: Run merge-gate wait-anchor tests
         run: node --test .github/scripts/renovate-merge-gate-*.test.js
+
+      - name: Run cleanup helper tests
+        run: node --test .github/scripts/workflow-run-cleanup.test.js
