@@ -14,20 +14,6 @@ const normalizeKeepDays = (value, { fallback = 1, maximum = 400 } = {}) => {
 	return parsed;
 };
 
-const normalizeBatchSize = (value, { fallback = 500, maximum = 1000 } = {}) => {
-	const parsed = Number.parseInt(String(value ?? ""), 10);
-
-	if (!Number.isInteger(parsed) || parsed < 1) {
-		return fallback;
-	}
-
-	if (parsed > maximum) {
-		throw new Error(`batch_size must be between 1 and ${maximum}`);
-	}
-
-	return parsed;
-};
-
 const normalizeTargetedRunCount = (
 	value,
 	{ fallback = 0, maximum = 3000 } = {},
@@ -39,7 +25,7 @@ const normalizeTargetedRunCount = (
 	}
 
 	if (parsed > maximum) {
-		throw new Error(`targeted_runs_so_far must be between 0 and ${maximum}`);
+		throw new Error(`targeted run count must be between 0 and ${maximum}`);
 	}
 
 	return parsed;
@@ -157,40 +143,13 @@ const summarizeRunsByWorkflow = ({ runs = [], limit = 10 } = {}) => {
 	};
 };
 
-const shouldContinueCleanup = ({
-	dryRun = false,
-	deletedRuns = 0,
-	batchSize = 0,
-	oldRunTotalCount = 0,
-	remainingTargetBudget = Number.POSITIVE_INFINITY,
-	scannedRuns = 0,
-} = {}) => {
-	if (dryRun || deletedRuns < 1) {
-		return false;
-	}
-
-	if (Number.isFinite(remainingTargetBudget) && remainingTargetBudget < 1) {
-		return false;
-	}
-
-	if (oldRunTotalCount > scannedRuns) {
-		return true;
-	}
-
-	return (
-		Number.isInteger(batchSize) && batchSize > 0 && deletedRuns >= batchSize
-	);
-};
-
 module.exports = {
 	buildCreatedBeforeFilter,
 	computeRemainingTargetedRunBudget,
 	computeCutoffDate,
 	describeWorkflowRun,
 	filterRunsToDelete,
-	normalizeBatchSize,
 	normalizeKeepDays,
 	normalizeTargetedRunCount,
-	shouldContinueCleanup,
 	summarizeRunsByWorkflow,
 };

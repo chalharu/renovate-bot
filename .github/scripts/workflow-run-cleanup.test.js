@@ -7,10 +7,8 @@ const {
 	computeCutoffDate,
 	describeWorkflowRun,
 	filterRunsToDelete,
-	normalizeBatchSize,
 	normalizeKeepDays,
 	normalizeTargetedRunCount,
-	shouldContinueCleanup,
 	summarizeRunsByWorkflow,
 } = require("./workflow-run-cleanup");
 
@@ -30,23 +28,7 @@ test("rejects keep_days values that exceed the supported maximum", () => {
 	);
 });
 
-test("normalizes batch_size inputs to a positive integer", () => {
-	assert.equal(normalizeBatchSize("250"), 250);
-	assert.equal(normalizeBatchSize(75), 75);
-	assert.equal(normalizeBatchSize("0"), 500);
-	assert.equal(normalizeBatchSize("-1"), 500);
-	assert.equal(normalizeBatchSize("abc"), 500);
-	assert.equal(normalizeBatchSize(undefined, { fallback: 25 }), 25);
-});
-
-test("rejects batch_size values that exceed the supported maximum", () => {
-	assert.throws(
-		() => normalizeBatchSize("1001"),
-		/batch_size must be between 1 and 1000/,
-	);
-});
-
-test("normalizes targeted_runs_so_far inputs to a non-negative integer", () => {
+test("normalizes targeted run counts to a non-negative integer", () => {
 	assert.equal(normalizeTargetedRunCount("2500"), 2500);
 	assert.equal(normalizeTargetedRunCount(25), 25);
 	assert.equal(normalizeTargetedRunCount("0"), 0);
@@ -55,10 +37,10 @@ test("normalizes targeted_runs_so_far inputs to a non-negative integer", () => {
 	assert.equal(normalizeTargetedRunCount(undefined, { fallback: 75 }), 75);
 });
 
-test("rejects targeted_runs_so_far values that exceed the supported maximum", () => {
+test("rejects targeted run counts that exceed the supported maximum", () => {
 	assert.throws(
 		() => normalizeTargetedRunCount("3001"),
-		/targeted_runs_so_far must be between 0 and 3000/,
+		/targeted run count must be between 0 and 3000/,
 	);
 });
 
@@ -194,6 +176,17 @@ test("computes the remaining targeted-run budget for a cleanup chain", () => {
 	);
 });
 
+test("rejects invalid per-run target limits", () => {
+	assert.throws(
+		() =>
+			computeRemainingTargetedRunBudget({
+				targetLimit: 0,
+				targetedRuns: 0,
+			}),
+		/targetLimit must be a positive integer/,
+	);
+});
+
 test("describes workflow runs by path, then name, then workflow id", () => {
 	assert.equal(
 		describeWorkflowRun({
@@ -249,68 +242,4 @@ test("summarizes run counts by workflow descriptor", () => {
 			},
 		],
 	});
-});
-
-test("continues cleanup only when another pass can make progress", () => {
-	assert.equal(
-		shouldContinueCleanup({
-			dryRun: true,
-			deletedRuns: 10,
-			batchSize: 100,
-			oldRunTotalCount: 500,
-			scannedRuns: 100,
-		}),
-		false,
-	);
-	assert.equal(
-		shouldContinueCleanup({
-			dryRun: false,
-			deletedRuns: 0,
-			batchSize: 100,
-			oldRunTotalCount: 500,
-			scannedRuns: 100,
-		}),
-		false,
-	);
-	assert.equal(
-		shouldContinueCleanup({
-			dryRun: false,
-			deletedRuns: 50,
-			batchSize: 100,
-			oldRunTotalCount: 500,
-			scannedRuns: 100,
-		}),
-		true,
-	);
-	assert.equal(
-		shouldContinueCleanup({
-			dryRun: false,
-			deletedRuns: 100,
-			batchSize: 100,
-			oldRunTotalCount: 100,
-			scannedRuns: 100,
-		}),
-		true,
-	);
-	assert.equal(
-		shouldContinueCleanup({
-			dryRun: false,
-			deletedRuns: 25,
-			batchSize: 100,
-			oldRunTotalCount: 25,
-			scannedRuns: 25,
-		}),
-		false,
-	);
-	assert.equal(
-		shouldContinueCleanup({
-			dryRun: false,
-			deletedRuns: 100,
-			batchSize: 100,
-			oldRunTotalCount: 500,
-			remainingTargetBudget: 0,
-			scannedRuns: 100,
-		}),
-		false,
-	);
 });
