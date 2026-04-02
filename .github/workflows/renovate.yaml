@@ -168,9 +168,12 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           owner: ${{ steps.resolve_repository.outputs.owner }}
           repositories: ${{ steps.resolve_repository.outputs.repository }}
+          # Renovate reads both check runs and commit statuses before it can automerge PRs.
+          permission-checks: read
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-statuses: read
           permission-workflows: write
       - name: Self-hosted Renovate
         uses: renovatebot/github-action@3633cede7d4d4598438e654eac4a695e46004420 # v46.1.7
