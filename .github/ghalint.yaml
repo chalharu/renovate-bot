@@ -1,5 +1,11 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/suzuki-shunsuke/ghalint/main/json-schema/ghalint.json
 excludes:
+  # This central Renovate workflow intentionally needs installation-wide repository scope
+  # so it can discover eligible repositories before launching per-repository jobs.
+  - policy_name: github_app_should_limit_repositories
+    workflow_file_path: .github/workflows/renovate.yaml
+    job_name: enumerate_repositories
+    step_id: get_token
   # This central merge gate intentionally needs installation-wide repository scope
   # so it can enumerate and manage Renovate PRs across repositories.
   - policy_name: github_app_should_limit_repositories
