@@ -73,7 +73,10 @@ test("replays a preserved Renovate branch onto the latest base branch", () => {
 	const repo = setupRemoteRepository();
 
 	try {
-		fs.writeFileSync(path.join(repo.workspace, "dependency.txt"), "version=1.0.0\n");
+		fs.writeFileSync(
+			path.join(repo.workspace, "dependency.txt"),
+			"version=1.0.0\n",
+		);
 		runGit({
 			cwd: repo.workspace,
 			args: ["add", "dependency.txt"],
@@ -91,7 +94,10 @@ test("replays a preserved Renovate branch onto the latest base branch", () => {
 			cwd: repo.workspace,
 			args: ["checkout", "-b", "renovate/test__v2.0.0"],
 		});
-		fs.writeFileSync(path.join(repo.workspace, "dependency.txt"), "version=2.0.0\n");
+		fs.writeFileSync(
+			path.join(repo.workspace, "dependency.txt"),
+			"version=2.0.0\n",
+		);
 		runGit({
 			cwd: repo.workspace,
 			args: ["commit", "-am", "renovate update"],
@@ -109,7 +115,10 @@ test("replays a preserved Renovate branch onto the latest base branch", () => {
 			cwd: repo.workspace,
 			args: ["checkout", "main"],
 		});
-		fs.writeFileSync(path.join(repo.workspace, "dependency.txt"), "version=1.0.1\n");
+		fs.writeFileSync(
+			path.join(repo.workspace, "dependency.txt"),
+			"version=1.0.1\n",
+		);
 		runGit({
 			cwd: repo.workspace,
 			args: ["commit", "-am", "base advances"],
@@ -159,7 +168,10 @@ test("refuses to refresh branches with more than one commit ahead of the base", 
 	const repo = setupRemoteRepository();
 
 	try {
-		fs.writeFileSync(path.join(repo.workspace, "dependency.txt"), "version=1.0.0\n");
+		fs.writeFileSync(
+			path.join(repo.workspace, "dependency.txt"),
+			"version=1.0.0\n",
+		);
 		runGit({
 			cwd: repo.workspace,
 			args: ["add", "dependency.txt"],
@@ -177,12 +189,18 @@ test("refuses to refresh branches with more than one commit ahead of the base", 
 			cwd: repo.workspace,
 			args: ["checkout", "-b", "renovate/test__v2.0.0"],
 		});
-		fs.writeFileSync(path.join(repo.workspace, "dependency.txt"), "version=2.0.0\n");
+		fs.writeFileSync(
+			path.join(repo.workspace, "dependency.txt"),
+			"version=2.0.0\n",
+		);
 		runGit({
 			cwd: repo.workspace,
 			args: ["commit", "-am", "renovate update"],
 		});
-		fs.writeFileSync(path.join(repo.workspace, "extra.txt"), "manual follow-up\n");
+		fs.writeFileSync(
+			path.join(repo.workspace, "extra.txt"),
+			"manual follow-up\n",
+		);
 		runGit({
 			cwd: repo.workspace,
 			args: ["add", "extra.txt"],

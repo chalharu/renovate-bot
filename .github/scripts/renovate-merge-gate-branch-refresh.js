@@ -32,7 +32,9 @@ const buildAuthenticatedRemoteUrl = ({ owner, repo, token }) => {
 		typeof repo !== "string" ||
 		repo.length === 0
 	) {
-		throw new Error("owner and repo are required to build an authenticated URL");
+		throw new Error(
+			"owner and repo are required to build an authenticated URL",
+		);
 	}
 
 	if (typeof token !== "string" || token.length === 0) {
@@ -75,7 +77,11 @@ const refreshPullRequestBranch = ({
 		});
 		runGit({
 			cwd: worktree,
-			args: ["config", "user.email", "renovate-merge-gate@users.noreply.github.com"],
+			args: [
+				"config",
+				"user.email",
+				"renovate-merge-gate@users.noreply.github.com",
+			],
 		});
 		runGit({
 			cwd: worktree,
