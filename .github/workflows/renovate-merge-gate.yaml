@@ -61,6 +61,9 @@ jobs:
             const { buildEffectiveLabelNames, evaluateInactiveBranch } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-inactive-branch.js"),
             );
+            const { ensureRebaseRetryRequested } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-rebase.js"),
+            );
             const WAIT_CHECK_NAME = "Renovate wait period";
             const SUPPORTED_CONFIG_PATHS = [
               "renovate.json",
@@ -83,6 +86,7 @@ jobs:
             const summary = {
               repositories: 0,
               autoclosedPullRequests: 0,
+              rebaseRequestedPullRequests: 0,
               relabeledPullRequests: 0,
               renovatePullRequests: 0,
               ignoredPullRequests: 0,
@@ -347,6 +351,30 @@ jobs:
               return closedPullRequest || deletedBranch;
             };
 
+            const requestPullRequestRebase = async ({ repository, pullRequest }) => {
+              const rebaseRequest = ensureRebaseRetryRequested(pullRequest.body ?? "");
+
+              if (!rebaseRequest.supported) {
+                core.warning(
+                  `Unable to request a Renovate rebase for PR #${pullRequest.number}: rebase/retry checkbox not found in the PR body.`,
+                );
+                return false;
+              }
+
+              if (!rebaseRequest.changed) {
+                return false;
+              }
+
+              await github.rest.pulls.update({
+                owner: repository.owner.login,
+                repo: repository.name,
+                pull_number: pullRequest.number,
+                body: rebaseRequest.body,
+              });
+              pullRequest.body = rebaseRequest.body;
+              return true;
+            };
+
             const getHeadCommitTimestamp = async ({ repository, ref }) => {
               const { data } = await github.rest.repos.getCommit({
                 owner: repository.owner.login,
@@ -465,6 +493,7 @@ jobs:
                 return {
                   ready: false,
                   reason: "No external CI checks found yet",
+                  mergeable: pullRequest.mergeable,
                 };
               }
 
@@ -480,6 +509,7 @@ jobs:
                 return {
                   ready: false,
                   reason: "Repository CI is not green yet",
+                  mergeable: pullRequest.mergeable,
                 };
               }
 
@@ -487,12 +517,14 @@ jobs:
                 return {
                   ready: false,
                   reason: `Pull request is not mergeable yet (${pullRequest.mergeable})`,
+                  mergeable: pullRequest.mergeable,
                 };
               }
 
               return {
                 ready: true,
                 reason: "Ready to merge",
+                mergeable: pullRequest.mergeable,
               };
             };
 
@@ -633,6 +665,7 @@ jobs:
                 });
 
                 for (const pullRequest of pullRequests) {
+                  let keptInactiveBranch = false;
                   const isRenovatePullRequest =
                     pullRequest.head.repo?.full_name === repository.full_name &&
                     pullRequest.head.ref.startsWith("renovate/") &&
@@ -678,6 +711,8 @@ jobs:
                       }
                       continue;
                     }
+
+                    keptInactiveBranch = true;
                   }
 
                   if (expectedLabels.length > 0) {
@@ -745,6 +780,19 @@ jobs:
                   });
 
                   if (!evaluation.ready) {
+                    if (
+                      keptInactiveBranch &&
+                      evaluation.mergeable === "CONFLICTING"
+                    ) {
+                      const requestedRebase = await requestPullRequestRebase({
+                        repository,
+                        pullRequest,
+                      });
+                      if (requestedRebase) {
+                        summary.rebaseRequestedPullRequests += 1;
+                      }
+                    }
+
                     summary.skippedPullRequests += 1;
                     continue;
                   }
@@ -777,6 +825,7 @@ jobs:
                 `Eligible repositories: ${summary.repositories}`,
                 `Open Renovate pull requests: ${summary.renovatePullRequests}`,
                 `Autoclosed stale pull requests: ${summary.autoclosedPullRequests}`,
+                `Requested Renovate rebases: ${summary.rebaseRequestedPullRequests}`,
                 `Relabeled pull requests: ${summary.relabeledPullRequests}`,
                 `Ignored pull requests without gate policy: ${summary.ignoredPullRequests}`,
                 `Waiting pull requests: ${summary.waitingPullRequests}`,
