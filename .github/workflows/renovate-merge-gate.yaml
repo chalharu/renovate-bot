@@ -51,6 +51,8 @@ jobs:
           persist-credentials: false
       - name: Manage Renovate pull requests
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          MERGE_GATE_GIT_TOKEN: ${{ steps.get_token.outputs.token }}
         with:
           github-token: ${{ steps.get_token.outputs.token }}
           script: |
@@ -61,8 +63,11 @@ jobs:
             const { buildEffectiveLabelNames, evaluateInactiveBranch } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-inactive-branch.js"),
             );
-            const { ensureRebaseRetryRequested } = require(
-              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-rebase.js"),
+            const {
+              buildAuthenticatedRemoteUrl,
+              refreshPullRequestBranch,
+            } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-branch-refresh.js"),
             );
             const WAIT_CHECK_NAME = "Renovate wait period";
             const SUPPORTED_CONFIG_PATHS = [
@@ -86,7 +91,7 @@ jobs:
             const summary = {
               repositories: 0,
               autoclosedPullRequests: 0,
-              rebaseRequestedPullRequests: 0,
+              refreshedPullRequestBranches: 0,
               relabeledPullRequests: 0,
               renovatePullRequests: 0,
               ignoredPullRequests: 0,
@@ -94,6 +99,10 @@ jobs:
               mergedPullRequests: 0,
               skippedPullRequests: 0,
             };
+
+            if (typeof process.env.MERGE_GATE_GIT_TOKEN === "string" && process.env.MERGE_GATE_GIT_TOKEN.length > 0) {
+              core.setSecret(process.env.MERGE_GATE_GIT_TOKEN);
+            }
 
             const hasSupportedRenovateConfig = async (repository) => {
               for (const path of SUPPORTED_CONFIG_PATHS) {
@@ -351,28 +360,25 @@ jobs:
               return closedPullRequest || deletedBranch;
             };
 
-            const requestPullRequestRebase = async ({ repository, pullRequest }) => {
-              const rebaseRequest = ensureRebaseRetryRequested(pullRequest.body ?? "");
-
-              if (!rebaseRequest.supported) {
-                core.warning(
-                  `Unable to request a Renovate rebase for PR #${pullRequest.number}: rebase/retry checkbox not found in the PR body.`,
-                );
-                return false;
+            const refreshPreservedPullRequestBranch = ({ repository, pullRequest }) => {
+              if (typeof process.env.MERGE_GATE_GIT_TOKEN !== "string" || process.env.MERGE_GATE_GIT_TOKEN.length === 0) {
+                throw new Error("MERGE_GATE_GIT_TOKEN is required to refresh preserved pull request branches");
               }
 
-              if (!rebaseRequest.changed) {
-                return false;
-              }
-
-              await github.rest.pulls.update({
+              const remoteUrl = buildAuthenticatedRemoteUrl({
                 owner: repository.owner.login,
                 repo: repository.name,
-                pull_number: pullRequest.number,
-                body: rebaseRequest.body,
+                token: process.env.MERGE_GATE_GIT_TOKEN,
               });
-              pullRequest.body = rebaseRequest.body;
-              return true;
+              core.setSecret(remoteUrl);
+              const refreshResult = refreshPullRequestBranch({
+                remoteUrl,
+                baseRef: pullRequest.base.ref,
+                headRef: pullRequest.head.ref,
+                headSha: pullRequest.head.sha,
+              });
+              pullRequest.head.sha = refreshResult.refreshedHeadSha;
+              return refreshResult;
             };
 
             const getHeadCommitTimestamp = async ({ repository, ref }) => {
@@ -784,12 +790,20 @@ jobs:
                       keptInactiveBranch &&
                       evaluation.mergeable === "CONFLICTING"
                     ) {
-                      const requestedRebase = await requestPullRequestRebase({
+                      const refreshedBranch = refreshPreservedPullRequestBranch({
                         repository,
                         pullRequest,
                       });
-                      if (requestedRebase) {
-                        summary.rebaseRequestedPullRequests += 1;
+                      if (refreshedBranch.refreshed) {
+                        await upsertWaitCheck({
+                          repository,
+                          headSha: pullRequest.head.sha,
+                          status: "completed",
+                          conclusion: "success",
+                          title: waitCheckState.waitPeriodLabel,
+                          details: `${waitCheckState.waitPeriodDetails}\n\nThe preserved Renovate branch was refreshed onto the latest ${pullRequest.base.ref}; waiting for checks to rerun.`,
+                        });
+                        summary.refreshedPullRequestBranches += 1;
                       }
                     }
 
@@ -825,7 +839,7 @@ jobs:
                 `Eligible repositories: ${summary.repositories}`,
                 `Open Renovate pull requests: ${summary.renovatePullRequests}`,
                 `Autoclosed stale pull requests: ${summary.autoclosedPullRequests}`,
-                `Requested Renovate rebases: ${summary.rebaseRequestedPullRequests}`,
+                `Refreshed preserved PR branches: ${summary.refreshedPullRequestBranches}`,
                 `Relabeled pull requests: ${summary.relabeledPullRequests}`,
                 `Ignored pull requests without gate policy: ${summary.ignoredPullRequests}`,
                 `Waiting pull requests: ${summary.waitingPullRequests}`,
