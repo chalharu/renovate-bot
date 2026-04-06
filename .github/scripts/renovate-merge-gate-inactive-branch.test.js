@@ -54,7 +54,7 @@ test("keeps legacy branch topics parseable for backward compatibility", () => {
 	});
 });
 
-test("keeps superseded patch PRs open for the current branch topic format", async () => {
+test("autocloses superseded patch PRs when a newer patch remains active on the same line", async () => {
 	const decision = await evaluateInactiveBranch({
 		pullRequest: {
 			head: {
@@ -66,9 +66,9 @@ test("keeps superseded patch PRs open for the current branch topic format", asyn
 	});
 
 	assert.deepEqual(decision, {
-		keep: true,
+		keep: false,
 		reason:
-			"custom separateMultiplePatch keeps v4.3.1 open while newer patch updates remain available",
+			"a newer patch release v4.3.2 remains active for this dependency line",
 	});
 });
 
@@ -89,7 +89,7 @@ test("merges expected labels into the effective label set before autoclose decis
 	]);
 });
 
-test("keeps superseded minor PRs open when custom separateMultipleMinor applies", async () => {
+test("keeps distinct minor-line PRs open when custom separateMultipleMinor applies", async () => {
 	const decision = await evaluateInactiveBranch({
 		pullRequest: {
 			head: {
@@ -113,6 +113,33 @@ test("keeps superseded minor PRs open when custom separateMultipleMinor applies"
 		keep: true,
 		reason:
 			"custom separateMultipleMinor keeps v4.2.0 open while newer minor updates remain available",
+	});
+});
+
+test("autocloses minor PRs when a newer patch remains active on the same target minor line", async () => {
+	const decision = await evaluateInactiveBranch({
+		pullRequest: {
+			head: {
+				ref: "renovate/actions-checkout__vv4.2.1",
+			},
+		},
+		depStates: buildDepStates({
+			currentVersion: "v4.1.0",
+			branches: [
+				{
+					updateType: "minor",
+					newVersion: "v4.2.3",
+				},
+			],
+		}),
+		effectiveLabels: ["renovate-gate-separate-multiple-minor"],
+		tagExistsForVersion: async () => true,
+	});
+
+	assert.deepEqual(decision, {
+		keep: false,
+		reason:
+			"a newer patch release v4.2.3 remains active for the target minor line",
 	});
 });
 
@@ -141,7 +168,7 @@ test("autocloses superseded minor PRs without the custom separateMultipleMinor l
 	});
 });
 
-test("keeps superseded major PRs open when custom separateMultipleMajor applies", async () => {
+test("keeps distinct major-line PRs open when custom separateMultipleMajor applies", async () => {
 	const decision = await evaluateInactiveBranch({
 		pullRequest: {
 			head: {
@@ -165,6 +192,32 @@ test("keeps superseded major PRs open when custom separateMultipleMajor applies"
 		keep: true,
 		reason:
 			"custom separateMultipleMajor keeps v5.0.0 open while newer major updates remain available",
+	});
+});
+
+test("autocloses major PRs when a newer release remains active on the same target major line", async () => {
+	const decision = await evaluateInactiveBranch({
+		pullRequest: {
+			head: {
+				ref: "renovate/actions-checkout__vv5.0.0",
+			},
+		},
+		depStates: buildDepStates({
+			currentVersion: "v4.1.0",
+			branches: [
+				{
+					updateType: "major",
+					newVersion: "v5.1.0",
+				},
+			],
+		}),
+		effectiveLabels: ["renovate-gate-separate-multiple-major"],
+		tagExistsForVersion: async () => true,
+	});
+
+	assert.deepEqual(decision, {
+		keep: false,
+		reason: "a newer release v5.1.0 remains active for the target major line",
 	});
 });
 
@@ -249,7 +302,14 @@ test("autocloses branches when the upstream release disappeared", async () => {
 				ref: "renovate/actions-checkout__vv4.3.1",
 			},
 		},
-		depStates: buildDepStates(),
+		depStates: buildDepStates({
+			branches: [
+				{
+					updateType: "patch",
+					newVersion: "v4.3.1",
+				},
+			],
+		}),
 		tagExistsForVersion: async () => false,
 	});
 

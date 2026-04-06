@@ -28,6 +28,37 @@ const compareParsedVersions = (left, right) => {
 	return 0;
 };
 
+const findNewestActiveVersion = ({
+	activeBranches,
+	updateType,
+	matchVersion,
+}) => {
+	let newestActiveVersion = null;
+
+	for (const branchUpdate of activeBranches) {
+		if (
+			branchUpdate.updateType !== updateType ||
+			typeof branchUpdate.newVersion !== "string"
+		) {
+			continue;
+		}
+
+		const activeTargetVersion = parseNumericVersion(branchUpdate.newVersion);
+		if (!activeTargetVersion || !matchVersion(activeTargetVersion)) {
+			continue;
+		}
+
+		if (
+			!newestActiveVersion ||
+			compareParsedVersions(activeTargetVersion, newestActiveVersion) > 0
+		) {
+			newestActiveVersion = activeTargetVersion;
+		}
+	}
+
+	return newestActiveVersion;
+};
+
 const normalizeLabelNames = (labels) =>
 	(Array.isArray(labels) ? labels : [])
 		.filter((label) => typeof label === "string" && label.trim().length > 0)
@@ -168,27 +199,34 @@ const evaluateInactiveBranch = async ({
 		const isMajorLine = targetVersion.major > currentVersion.major;
 
 		if (hasMultipleMinorLabel && isMinorLine) {
-			const hasActiveMinorOnSameMajor = activeBranches.some((branchUpdate) => {
-				if (
-					branchUpdate.updateType !== "minor" ||
-					typeof branchUpdate.newVersion !== "string"
-				) {
-					return false;
-				}
-
-				const activeTargetVersion = parseNumericVersion(
-					branchUpdate.newVersion,
-				);
-				return (
-					!!activeTargetVersion &&
-					activeTargetVersion.major === currentVersion.major
-				);
+			const newestActiveMinorOnSameMajor = findNewestActiveVersion({
+				activeBranches,
+				updateType: "minor",
+				matchVersion: (activeTargetVersion) =>
+					activeTargetVersion.major === currentVersion.major,
 			});
 
-			if (!hasActiveMinorOnSameMajor) {
+			if (!newestActiveMinorOnSameMajor) {
 				return {
 					keep: false,
 					reason: "no active minor update remains for this dependency major",
+				};
+			}
+
+			const newestActiveMinorOnTargetLine = findNewestActiveVersion({
+				activeBranches,
+				updateType: "minor",
+				matchVersion: (activeTargetVersion) =>
+					activeTargetVersion.major === targetVersion.major &&
+					activeTargetVersion.minor === targetVersion.minor,
+			});
+			if (
+				newestActiveMinorOnTargetLine &&
+				compareParsedVersions(newestActiveMinorOnTargetLine, targetVersion) > 0
+			) {
+				return {
+					keep: false,
+					reason: `a newer patch release ${newestActiveMinorOnTargetLine.raw} remains active for the target minor line`,
 				};
 			}
 
@@ -210,27 +248,33 @@ const evaluateInactiveBranch = async ({
 		}
 
 		if (hasMultipleMajorLabel && isMajorLine) {
-			const hasActiveMajor = activeBranches.some((branchUpdate) => {
-				if (
-					branchUpdate.updateType !== "major" ||
-					typeof branchUpdate.newVersion !== "string"
-				) {
-					return false;
-				}
-
-				const activeTargetVersion = parseNumericVersion(
-					branchUpdate.newVersion,
-				);
-				return (
-					!!activeTargetVersion &&
-					activeTargetVersion.major > currentVersion.major
-				);
+			const newestActiveMajor = findNewestActiveVersion({
+				activeBranches,
+				updateType: "major",
+				matchVersion: (activeTargetVersion) =>
+					activeTargetVersion.major > currentVersion.major,
 			});
 
-			if (!hasActiveMajor) {
+			if (!newestActiveMajor) {
 				return {
 					keep: false,
 					reason: "no active major update remains for this dependency",
+				};
+			}
+
+			const newestActiveMajorOnTargetLine = findNewestActiveVersion({
+				activeBranches,
+				updateType: "major",
+				matchVersion: (activeTargetVersion) =>
+					activeTargetVersion.major === targetVersion.major,
+			});
+			if (
+				newestActiveMajorOnTargetLine &&
+				compareParsedVersions(newestActiveMajorOnTargetLine, targetVersion) > 0
+			) {
+				return {
+					keep: false,
+					reason: `a newer release ${newestActiveMajorOnTargetLine.raw} remains active for the target major line`,
 				};
 			}
 
@@ -257,26 +301,25 @@ const evaluateInactiveBranch = async ({
 		};
 	}
 
-	const hasActivePatchOnSameLine = activeBranches.some((branchUpdate) => {
-		if (
-			branchUpdate.updateType !== "patch" ||
-			typeof branchUpdate.newVersion !== "string"
-		) {
-			return false;
-		}
-
-		const activeTargetVersion = parseNumericVersion(branchUpdate.newVersion);
-		return (
-			!!activeTargetVersion &&
+	const newestActivePatchOnSameLine = findNewestActiveVersion({
+		activeBranches,
+		updateType: "patch",
+		matchVersion: (activeTargetVersion) =>
 			activeTargetVersion.major === currentVersion.major &&
-			activeTargetVersion.minor === currentVersion.minor
-		);
+			activeTargetVersion.minor === currentVersion.minor,
 	});
 
-	if (!hasActivePatchOnSameLine) {
+	if (!newestActivePatchOnSameLine) {
 		return {
 			keep: false,
 			reason: "no active patch update remains for this dependency line",
+		};
+	}
+
+	if (compareParsedVersions(newestActivePatchOnSameLine, targetVersion) > 0) {
+		return {
+			keep: false,
+			reason: `a newer patch release ${newestActivePatchOnSameLine.raw} remains active for this dependency line`,
 		};
 	}
 
