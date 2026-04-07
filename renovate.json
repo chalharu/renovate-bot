@@ -6,6 +6,8 @@
   "pruneStaleBranches": false,
   "separateMajorMinor": true,
   "separateMinorPatch": true,
+  "separateMultipleMajor": true,
+  "separateMultipleMinor": true,
   "automerge": true,
   "automergeStrategy": "auto",
   "platformAutomerge": false,
