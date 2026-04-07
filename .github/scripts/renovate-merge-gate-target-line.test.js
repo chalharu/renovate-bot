@@ -10,11 +10,7 @@ test("allows same-line patch downgrades after the wait gate", () => {
 		evaluatePullRequestTargetLine({
 			headRef: "renovate/actions-checkout__vv4.3.1",
 			patches: [
-				[
-					"@@ -1 +1 @@",
-					"-version: 4.3.5",
-					"+version: 4.3.1",
-				].join("\n"),
+				["@@ -1 +1 @@", "-version: 4.3.5", "+version: 4.3.1"].join("\n"),
 			],
 		}),
 		{
@@ -28,11 +24,7 @@ test("blocks merges when the live base already moved to a newer minor line", () 
 		evaluatePullRequestTargetLine({
 			headRef: "renovate/actions-checkout__vv4.3.0",
 			patches: [
-				[
-					"@@ -1 +1 @@",
-					"-version: 4.4.2",
-					"+version: 4.3.0",
-				].join("\n"),
+				["@@ -1 +1 @@", "-version: 4.4.2", "+version: 4.3.0"].join("\n"),
 			],
 		}),
 		{
@@ -216,11 +208,7 @@ test("treats lines beginning with repeated diff markers as actual content", () =
 		evaluatePullRequestTargetLine({
 			headRef: "renovate/actions-checkout__vv4.3.0",
 			patches: [
-				[
-					"@@ -1 +1 @@",
-					"---version: 4.4.2",
-					"+--version: 4.3.0",
-				].join("\n"),
+				["@@ -1 +1 @@", "---version: 4.4.2", "+--version: 4.3.0"].join("\n"),
 			],
 		}),
 		{
@@ -256,11 +244,7 @@ test("ignores hunks that do not add the pull request target version", () => {
 		evaluatePullRequestTargetLine({
 			headRef: "renovate/actions-checkout__vv4.3.0",
 			patches: [
-				[
-					"@@ -1 +1 @@",
-					"-version: 5.0.0",
-					"+version: 6.0.0",
-				].join("\n"),
+				["@@ -1 +1 @@", "-version: 5.0.0", "+version: 6.0.0"].join("\n"),
 			],
 		}),
 		{

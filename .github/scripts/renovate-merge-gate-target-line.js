@@ -38,7 +38,8 @@ const normalizeVersionText = (version) =>
 		? version.slice(1)
 		: version;
 
-const normalizeVersionTokens = (line) => line.replace(VERSION_PATTERN, "<version>");
+const normalizeVersionTokens = (line) =>
+	line.replace(VERSION_PATTERN, "<version>");
 const normalizeLineStructure = (line) =>
 	normalizeVersionTokens(stripTrailingHashComment(line))
 		.replace(/\s+/g, " ")
