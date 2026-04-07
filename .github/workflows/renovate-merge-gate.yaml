@@ -70,6 +70,9 @@ jobs:
             } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-branch-refresh.js"),
             );
+            const { resolveRestMergeability } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-mergeability.js"),
+            );
             const { forEachPullRequestSafely } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-pr-loop.js"),
             );
@@ -456,7 +459,6 @@ jobs:
                 `query($owner: String!, $repo: String!, $pullRequestNumber: Int!) {
                   repository(owner: $owner, name: $repo) {
                     pullRequest(number: $pullRequestNumber) {
-                      mergeable
                       commits(last: 1) {
                         nodes {
                           commit {
@@ -503,7 +505,8 @@ jobs:
                 return {
                   ready: false,
                   reason: "No external CI checks found yet",
-                  mergeable: pullRequest.mergeable,
+                  mergeable: "UNKNOWN",
+                  needsBranchRefresh: false,
                 };
               }
 
@@ -519,22 +522,29 @@ jobs:
                 return {
                   ready: false,
                   reason: "Repository CI is not green yet",
-                  mergeable: pullRequest.mergeable,
+                  mergeable: "UNKNOWN",
+                  needsBranchRefresh: false,
                 };
               }
 
-              if (pullRequest.mergeable !== "MERGEABLE") {
-                return {
-                  ready: false,
-                  reason: `Pull request is not mergeable yet (${pullRequest.mergeable})`,
-                  mergeable: pullRequest.mergeable,
-                };
-              }
+              const mergeability = await resolveRestMergeability({
+                loadMergeableState: async () => {
+                  const { data } = await github.rest.pulls.get({
+                    owner: repository.owner.login,
+                    repo: repository.name,
+                    pull_number: pullRequestNumber,
+                  });
+                  return data.mergeable_state;
+                },
+                maxAttempts: 3,
+                delayMs: 1000,
+              });
 
               return {
-                ready: true,
-                reason: "Ready to merge",
-                mergeable: pullRequest.mergeable,
+                ready: mergeability.ready,
+                reason: mergeability.reason,
+                mergeable: mergeability.mergeable,
+                needsBranchRefresh: mergeability.needsBranchRefresh,
               };
             };
 
@@ -791,28 +801,30 @@ jobs:
                       pullRequestNumber: pullRequest.number,
                     });
 
-                    if (!evaluation.ready) {
-                      if (
-                        keptInactiveBranch &&
-                        evaluation.mergeable === "CONFLICTING"
-                      ) {
-                        const refreshedBranch = refreshPreservedPullRequestBranch({
+                    if (
+                      keptInactiveBranch &&
+                      evaluation.needsBranchRefresh
+                    ) {
+                      const refreshedBranch = refreshPreservedPullRequestBranch({
+                        repository,
+                        pullRequest,
+                      });
+                      if (refreshedBranch.refreshed) {
+                        await upsertWaitCheck({
                           repository,
-                          pullRequest,
+                          headSha: pullRequest.head.sha,
+                          status: "completed",
+                          conclusion: "success",
+                          title: waitCheckState.waitPeriodLabel,
+                          details: `${waitCheckState.waitPeriodDetails}\n\nThe preserved Renovate branch was refreshed onto the latest ${pullRequest.base.ref}; waiting for checks to rerun.`,
                         });
-                        if (refreshedBranch.refreshed) {
-                          await upsertWaitCheck({
-                            repository,
-                            headSha: pullRequest.head.sha,
-                            status: "completed",
-                            conclusion: "success",
-                            title: waitCheckState.waitPeriodLabel,
-                            details: `${waitCheckState.waitPeriodDetails}\n\nThe preserved Renovate branch was refreshed onto the latest ${pullRequest.base.ref}; waiting for checks to rerun.`,
-                          });
-                          summary.refreshedPullRequestBranches += 1;
-                        }
+                        summary.refreshedPullRequestBranches += 1;
                       }
+                      summary.skippedPullRequests += 1;
+                      return;
+                    }
 
+                    if (!evaluation.ready) {
                       summary.skippedPullRequests += 1;
                       return;
                     }
