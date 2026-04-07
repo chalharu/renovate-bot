@@ -73,6 +73,9 @@ jobs:
             const { resolveRestMergeability } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-mergeability.js"),
             );
+            const { evaluatePullRequestTargetLine } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-target-line.js"),
+            );
             const { forEachPullRequestSafely } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-merge-gate-pr-loop.js"),
             );
@@ -384,7 +387,9 @@ jobs:
                 headRef: pullRequest.head.ref,
                 headSha: pullRequest.head.sha,
               });
-              pullRequest.head.sha = refreshResult.refreshedHeadSha;
+              if (typeof refreshResult.refreshedHeadSha === "string") {
+                pullRequest.head.sha = refreshResult.refreshedHeadSha;
+              }
               return refreshResult;
             };
 
@@ -402,6 +407,41 @@ jobs:
 
               return latestTimestamp;
             };
+
+            const loadPullRequestPatches = async ({ repository, pullRequestNumber }) =>
+              {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  owner: repository.owner.login,
+                  repo: repository.name,
+                  pull_number: pullRequestNumber,
+                  per_page: 100,
+                });
+                const patches = files
+                  .map((file) => file.patch)
+                  .filter((patch) => typeof patch === "string" && patch.length > 0);
+                if (patches.length === files.length) {
+                  return patches;
+                }
+
+                const { data } = await github.request(
+                  "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+                  {
+                    owner: repository.owner.login,
+                    repo: repository.name,
+                    pull_number: pullRequestNumber,
+                    headers: {
+                      accept: "application/vnd.github.v3.diff",
+                    },
+                  },
+                );
+                if (typeof data !== "string" || data.trim().length === 0) {
+                  throw new Error(
+                    `Unable to load a textual diff for PR #${pullRequestNumber}`,
+                  );
+                }
+
+                return [data];
+              };
 
             const upsertWaitCheck = async ({ repository, headSha, status, conclusion, title, details, createIfMissing = true }) => {
               const now = new Date().toISOString();
@@ -809,6 +849,19 @@ jobs:
                         repository,
                         pullRequest,
                       });
+                      if (refreshedBranch.blocked) {
+                        const wasAutoclosed = await autoclosePullRequest({
+                          repository,
+                          pullRequest,
+                          reason: refreshedBranch.reason,
+                        });
+                        if (wasAutoclosed) {
+                          summary.autoclosedPullRequests += 1;
+                        } else {
+                          summary.skippedPullRequests += 1;
+                        }
+                        return;
+                      }
                       if (refreshedBranch.refreshed) {
                         await upsertWaitCheck({
                           repository,
@@ -826,6 +879,27 @@ jobs:
 
                     if (!evaluation.ready) {
                       summary.skippedPullRequests += 1;
+                      return;
+                    }
+
+                    const targetLineEvaluation = evaluatePullRequestTargetLine({
+                      headRef: pullRequest.head.ref,
+                      patches: await loadPullRequestPatches({
+                        repository,
+                        pullRequestNumber: pullRequest.number,
+                      }),
+                    });
+                    if (targetLineEvaluation.blocked) {
+                      const wasAutoclosed = await autoclosePullRequest({
+                        repository,
+                        pullRequest,
+                        reason: targetLineEvaluation.reason,
+                      });
+                      if (wasAutoclosed) {
+                        summary.autoclosedPullRequests += 1;
+                      } else {
+                        summary.skippedPullRequests += 1;
+                      }
                       return;
                     }
 

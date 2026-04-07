@@ -299,6 +299,8 @@ const evaluateInactiveBranch = async ({
 
 module.exports = {
 	buildEffectiveLabelNames,
+	compareParsedVersions,
 	evaluateInactiveBranch,
 	inferInactiveBranchMetadata,
+	parseNumericVersion,
 };
