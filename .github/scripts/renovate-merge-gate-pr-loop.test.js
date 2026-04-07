@@ -1,9 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const {
-	forEachPullRequestSafely,
-} = require("./renovate-merge-gate-pr-loop");
+const { forEachPullRequestSafely } = require("./renovate-merge-gate-pr-loop");
 
 test("processes pull requests sequentially", async () => {
 	const processed = [];
