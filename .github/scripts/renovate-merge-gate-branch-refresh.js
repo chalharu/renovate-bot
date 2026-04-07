@@ -2,6 +2,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const {
+	evaluatePullRequestTargetLine,
+} = require("./renovate-merge-gate-target-line");
 
 const runGit = ({ cwd, args, env = {} }) => {
 	const result = spawnSync("git", args, {
@@ -158,6 +161,22 @@ const refreshPullRequestBranch = ({
 			cwd: worktree,
 			args: ["rev-parse", "HEAD"],
 		});
+		const targetLineEvaluation = evaluatePullRequestTargetLine({
+			headRef,
+			patches: [
+				runGit({
+					cwd: worktree,
+					args: ["show", "--format=", "HEAD"],
+				}),
+			],
+		});
+		if (targetLineEvaluation.blocked) {
+			return {
+				refreshed: false,
+				blocked: true,
+				reason: targetLineEvaluation.reason,
+			};
+		}
 		runGit({
 			cwd: worktree,
 			args: [

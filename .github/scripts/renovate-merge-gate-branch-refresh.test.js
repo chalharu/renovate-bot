@@ -233,3 +233,91 @@ test("refuses to refresh branches with more than one commit ahead of the base", 
 		repo.cleanup();
 	}
 });
+
+test("refuses to refresh branches that would move the base back to an older target line", () => {
+	const repo = setupRemoteRepository();
+
+	try {
+		fs.writeFileSync(
+			path.join(repo.workspace, "dependency.txt"),
+			"version=1.0.0\n",
+		);
+		runGit({
+			cwd: repo.workspace,
+			args: ["add", "dependency.txt"],
+		});
+		runGit({
+			cwd: repo.workspace,
+			args: ["commit", "-m", "base"],
+		});
+		runGit({
+			cwd: repo.workspace,
+			args: ["push", "-u", "origin", "main"],
+		});
+
+		runGit({
+			cwd: repo.workspace,
+			args: ["checkout", "-b", "renovate/test__v1.1.0"],
+		});
+		fs.writeFileSync(
+			path.join(repo.workspace, "dependency.txt"),
+			"version=1.1.0\n",
+		);
+		runGit({
+			cwd: repo.workspace,
+			args: ["commit", "-am", "renovate update"],
+		});
+		const originalHeadSha = runGit({
+			cwd: repo.workspace,
+			args: ["rev-parse", "HEAD"],
+		});
+		runGit({
+			cwd: repo.workspace,
+			args: ["push", "-u", "origin", "renovate/test__v1.1.0"],
+		});
+
+		runGit({
+			cwd: repo.workspace,
+			args: ["checkout", "main"],
+		});
+		fs.writeFileSync(
+			path.join(repo.workspace, "dependency.txt"),
+			"version=2.0.0\n",
+		);
+		runGit({
+			cwd: repo.workspace,
+			args: ["commit", "-am", "base advances to newer line"],
+		});
+		runGit({
+			cwd: repo.workspace,
+			args: ["push"],
+		});
+
+		const result = refreshPullRequestBranch({
+			remoteUrl: repo.remoteDir,
+			baseRef: "main",
+			headRef: "renovate/test__v1.1.0",
+			headSha: originalHeadSha,
+			tmpDirRoot: repo.root,
+		});
+
+		assert.deepEqual(result, {
+			refreshed: false,
+			blocked: true,
+			reason:
+				"the current base already moved to newer line 2.0.0 than the target version 1.1.0",
+		});
+
+		runGit({
+			cwd: repo.workspace,
+			args: ["fetch", "--quiet", "origin", "renovate/test__v1.1.0"],
+		});
+		const remoteHeadSha = runGit({
+			cwd: repo.workspace,
+			args: ["rev-parse", "origin/renovate/test__v1.1.0"],
+		});
+		assert.equal(remoteHeadSha, originalHeadSha);
+	} finally {
+		repo.cleanup();
+	}
+});
