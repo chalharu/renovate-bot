@@ -179,7 +179,7 @@ jobs:
         uses: renovatebot/github-action@eb932558ad942cccfd8211cf535f17ff183a9f74 # v46.1.9
         with:
           # Managed by Renovate via renovate.json customManagers.
-          renovate-version: 43.110.12
+          renovate-version: 43.110.14
           token: '${{ steps.get_token.outputs.token }}'
         env:
           RENOVATE_AUTODISCOVER: "false"
