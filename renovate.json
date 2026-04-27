@@ -29,13 +29,12 @@
       "renovate",
       "security"
     ],
-    "minimumReleaseAge": null,
+    "minimumReleaseAge": null
   },
   "lockFileMaintenance": {
     "enabled": true
   },
   "rangeStrategy": "pin",
-  "timezone": "Asia/Tokyo",
   "minimumReleaseAge": "3 days",
   "minimumReleaseAgeBehaviour": "timestamp-optional",
   "customManagers": [
