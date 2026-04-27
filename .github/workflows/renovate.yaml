@@ -4,9 +4,6 @@ on:
   schedule:
     - cron: '*/5 * * * *'
 concurrency: renovate
-env:
-  RENOVATE_LOG_PATH: /tmp/renovate.log
-  REPOSITORY_DATA_PATH: /tmp/eligible-repositories.json
 jobs:
   enumerate_repositories:
     name: Enumerate accessible repositories
@@ -15,15 +12,89 @@ jobs:
     permissions:
       contents: read
     outputs:
+      client_id: ${{ steps.resolve_app_client_id.outputs.client_id }}
       matrix: ${{ steps.list_repositories.outputs.matrix }}
       repository_count: ${{ steps.list_repositories.outputs.repository_count }}
+      selection_map: ${{ steps.list_repositories.outputs.selection_map }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Resolve GitHub App client ID
+        id: resolve_app_client_id
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CONFIGURED_CLIENT_ID: ${{ vars.APP_CLIENT_ID }}
+          LEGACY_APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+        with:
+          script: |
+            const crypto = require("node:crypto");
+            const configuredClientId = (process.env.CONFIGURED_CLIENT_ID ?? "").trim();
+            if (configuredClientId.length > 0) {
+              core.setOutput("client_id", configuredClientId);
+              return;
+            }
+
+            const legacyAppId = (process.env.LEGACY_APP_ID ?? "").trim();
+            if (legacyAppId.length === 0) {
+              throw new Error("Configure vars.APP_CLIENT_ID or secrets.APP_ID with a GitHub App identifier.");
+            }
+
+            if (legacyAppId.startsWith("Iv1.")) {
+              core.setOutput("client_id", legacyAppId);
+              return;
+            }
+
+            if (!/^\d+$/.test(legacyAppId)) {
+              throw new Error("secrets.APP_ID must contain either a GitHub App client ID or a numeric GitHub App ID.");
+            }
+
+            const privateKey = process.env.APP_PRIVATE_KEY ?? "";
+            if (privateKey.length === 0) {
+              throw new Error("Missing GitHub App private key.");
+            }
+
+            core.setSecret(legacyAppId);
+            core.setSecret(privateKey);
+
+            const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+            const now = Math.floor(Date.now() / 1000);
+            const encodedHeader = encode({ alg: "RS256", typ: "JWT" });
+            const encodedPayload = encode({
+              iat: now - 60,
+              exp: now + 540,
+              iss: legacyAppId,
+            });
+            const signer = crypto.createSign("RSA-SHA256");
+            signer.update(`${encodedHeader}.${encodedPayload}`);
+            signer.end();
+            const jwt = `${encodedHeader}.${encodedPayload}.${signer.sign(privateKey, "base64url")}`;
+            const response = await fetch(`${process.env.GITHUB_API_URL ?? "https://api.github.com"}/app`, {
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: `Bearer ${jwt}`,
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            });
+
+            if (!response.ok) {
+              throw new Error(`Unable to resolve the GitHub App client ID (status: ${response.status})`);
+            }
+
+            const app = await response.json();
+            if (typeof app.client_id !== "string" || app.client_id.trim().length === 0) {
+              throw new Error("The GitHub App client ID was missing from the /app response.");
+            }
+
+            core.setOutput("client_id", app.client_id.trim());
       - name: Get token
         id: get_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
+          client-id: ${{ steps.resolve_app_client_id.outputs.client_id }}
           private-key: ${{ secrets.PRIVATE_KEY }}
-          app-id: ${{ secrets.APP_ID }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
       - name: List accessible repositories
@@ -32,93 +103,33 @@ jobs:
         with:
           github-token: ${{ steps.get_token.outputs.token }}
           script: |
-            const fs = require("node:fs");
-            const supportedConfigPaths = [
-              "renovate.json",
-              "renovate.json5",
-              ".github/renovate.json",
-              ".github/renovate.json5",
-              ".gitlab/renovate.json",
-              ".gitlab/renovate.json5",
-              ".renovaterc",
-              ".renovaterc.json",
-              ".renovaterc.json5",
-            ];
-
-            const hasSupportedRenovateConfig = async (repository) => {
-              for (const path of supportedConfigPaths) {
-                try {
-                  await github.rest.repos.getContent({
-                    owner: repository.owner.login,
-                    repo: repository.name,
-                    path,
-                  });
-                  return true;
-                } catch (error) {
-                  if (error.status === 404) {
-                    continue;
-                  }
-
-                  throw new Error(`Unable to determine repository eligibility (status: ${error.status ?? "unknown"})`);
-                }
-              }
-
-              return false;
-            };
+            const path = require("node:path");
+            const {
+              buildRepositoryMatrix,
+              buildRepositorySelectionMap,
+              filterCandidateRepositories,
+              maskPrivateRepositories,
+              toEligibleRepository,
+            } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
 
             const repositories = await github.paginate("GET /installation/repositories", {
               per_page: 100,
             });
-            const uniqueRepositories = [...new Map(
-              repositories
-                .filter((repository) =>
-                  repository.owner.login === context.repo.owner &&
-                  !repository.archived &&
-                  !repository.disabled,
-                )
-                .map((repository) => [repository.full_name, repository]),
-            ).values()];
-            const eligibleRepositories = [];
+            const accessibleRepositories = filterCandidateRepositories({
+              repositories,
+              owner: context.repo.owner,
+            }).map(toEligibleRepository);
 
-            for (const repository of uniqueRepositories) {
-              if (!(await hasSupportedRenovateConfig(repository))) {
-                continue;
-              }
-
-              eligibleRepositories.push({
-                owner: repository.owner.login,
-                repository: repository.name,
-                full_name: repository.full_name,
-                private: repository.private,
-              });
-            }
-
-            eligibleRepositories.sort((left, right) => left.full_name.localeCompare(right.full_name));
-
-            for (const repository of eligibleRepositories) {
-              if (!repository.private) {
-                continue;
-              }
-
-              core.setSecret(repository.full_name);
-              core.setSecret(repository.repository);
-            }
-
-            core.setOutput("matrix", JSON.stringify({
-              include: eligibleRepositories.map((_, repository_index) => ({ repository_index })),
-            }));
-            fs.writeFileSync(process.env.REPOSITORY_DATA_PATH, JSON.stringify(eligibleRepositories));
-            core.setOutput("repository_count", String(eligibleRepositories.length));
-      - name: Upload repository data
-        if: ${{ steps.list_repositories.outputs.repository_count != '0' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: renovate-repositories
-          path: ${{ env.REPOSITORY_DATA_PATH }}
-          if-no-files-found: error
-          retention-days: 1
+            maskPrivateRepositories({ core, repositories: accessibleRepositories });
+            core.setOutput("matrix", JSON.stringify(buildRepositoryMatrix({
+              repositories: accessibleRepositories,
+            })));
+            core.setOutput("selection_map", JSON.stringify(buildRepositorySelectionMap({
+              repositories: accessibleRepositories,
+            })));
+            core.setOutput("repository_count", String(accessibleRepositories.length));
   renovate:
-    name: Self-hosted Renovate
+    name: Self-hosted Renovate (${{ matrix.repository || format('private-{0}', matrix.repository_index) }})
     needs: enumerate_repositories
     if: ${{ needs.enumerate_repositories.outputs.repository_count != '0' }}
     strategy:
@@ -127,35 +138,52 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      actions: write
       contents: read
     steps:
-      - name: Download repository data
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          name: renovate-repositories
-          path: /tmp
+          persist-credentials: false
+      - name: Get repository list token
+        id: get_repository_list_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ needs.enumerate_repositories.outputs.client_id }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
       - name: Resolve repository details
         id: resolve_repository
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          REPOSITORY: ${{ matrix.repository }}
           REPOSITORY_INDEX: ${{ matrix.repository_index }}
+          SELECTION_MAP: ${{ needs.enumerate_repositories.outputs.selection_map }}
         with:
+          github-token: ${{ steps.get_repository_list_token.outputs.token }}
           script: |
-            const fs = require("node:fs");
-            const repositories = JSON.parse(fs.readFileSync(process.env.REPOSITORY_DATA_PATH, "utf8"));
-            const repositoryIndex = Number(process.env.REPOSITORY_INDEX);
-            const repository = repositories[repositoryIndex];
-
-            if (!repository) {
-              core.setFailed(`Repository index ${process.env.REPOSITORY_INDEX} is unavailable`);
-              return;
-            }
-
-            if (repository.private) {
-              core.setSecret(repository.full_name);
-              core.setSecret(repository.repository);
-            }
+            const path = require("node:path");
+            const {
+              filterCandidateRepositories,
+              maskPrivateRepositories,
+              resolveRepositorySelection,
+              toEligibleRepository,
+            } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
+            const repositories = await github.paginate("GET /installation/repositories", {
+              per_page: 100,
+            });
+            const accessibleRepositories = filterCandidateRepositories({
+              repositories,
+              owner: context.repo.owner,
+            }).map(toEligibleRepository);
+            const selectionMap = JSON.parse(process.env.SELECTION_MAP || "[]");
+            const repository = resolveRepositorySelection({
+              repositories: accessibleRepositories,
+              selectionMap,
+              repository: process.env.REPOSITORY,
+              repositoryIndex: process.env.REPOSITORY_INDEX,
+            });
+            maskPrivateRepositories({ core, repositories: [repository] });
 
             core.setOutput("owner", repository.owner);
             core.setOutput("repository", repository.repository);
@@ -164,13 +192,14 @@ jobs:
         id: get_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
+          client-id: ${{ needs.enumerate_repositories.outputs.client_id }}
           private-key: ${{ secrets.PRIVATE_KEY }}
-          app-id: ${{ secrets.APP_ID }}
           owner: ${{ steps.resolve_repository.outputs.owner }}
           repositories: ${{ steps.resolve_repository.outputs.repository }}
           # Renovate reads both check runs and commit statuses before it can automerge PRs.
           permission-checks: read
           permission-contents: write
+          permission-vulnerability-alerts: read
           permission-issues: write
           permission-pull-requests: write
           permission-statuses: read
@@ -179,177 +208,14 @@ jobs:
         uses: renovatebot/github-action@6a9df9227eeb83af9a5abef6890bbb0c9068f436 # v46.1.11
         with:
           # Managed by Renovate via renovate.json customManagers.
+          configurationFile: renovate.json
           renovate-version: 43.141.5
           token: '${{ steps.get_token.outputs.token }}'
         env:
           RENOVATE_AUTODISCOVER: "false"
+          RENOVATE_REQUIRE_CONFIG: "optional"
           RENOVATE_REPOSITORIES: ${{ steps.resolve_repository.outputs.full_name }}
           RENOVATE_ONBOARDING: "false"
           RENOVATE_PLATFORM_COMMIT: "true"
           RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
-          RENOVATE_LOG_FILE: ${{ env.RENOVATE_LOG_PATH }}
-          RENOVATE_LOG_FILE_FORMAT: json
-          RENOVATE_LOG_FILE_LEVEL: debug
           LOG_LEVEL: warn
-      - name: Extract Renovate branch metadata
-        id: extract_branch_metadata
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          LOG_PATH: ${{ env.RENOVATE_LOG_PATH }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            const sanitizeDepName = (depName) => depName
-              .replace("@types/", "")
-              .replace("@", "")
-              .replace(/\//g, "-")
-              .replace(/\s+/g, "-")
-              .replace(/:/g, "-")
-              .replace(/-+/g, "-")
-              .toLowerCase();
-            const normalizeLabels = (labels) => Array.isArray(labels)
-              ? labels
-                .filter((label) => typeof label === "string" && label.trim().length > 0)
-                .map((label) => label.trim())
-              : [];
-            const shortenDigest = (digest) => typeof digest === "string"
-              ? digest.replace(/^sha256:/, "").substring(0, 7)
-              : null;
-            let activeBranches = [];
-            let activeBranchesKnown = false;
-            let branchUpdates = [];
-            let branchUpdatesKnown = false;
-
-            if (fs.existsSync(process.env.LOG_PATH)) {
-              const lines = fs.readFileSync(process.env.LOG_PATH, "utf8")
-                .split(/\r?\n/)
-                .filter(Boolean);
-
-              for (const line of lines) {
-                try {
-                  const entry = JSON.parse(line);
-
-                  if (entry.msg === "Branch lists" && Array.isArray(entry.branchList)) {
-                    activeBranches = entry.branchList;
-                    activeBranchesKnown = true;
-                    continue;
-                  }
-
-                  if (!activeBranchesKnown && entry.msg === "No renovate branches found") {
-                    activeBranches = [];
-                    activeBranchesKnown = true;
-                    continue;
-                  }
-
-                  if (entry.msg === "packageFiles with updates" && entry.config && typeof entry.config === "object") {
-                    const extractedUpdates = new Map();
-
-                    for (const [manager, packageFiles] of Object.entries(entry.config)) {
-                      if (!Array.isArray(packageFiles)) {
-                        continue;
-                      }
-
-                      for (const packageFile of packageFiles) {
-                        if (!Array.isArray(packageFile?.deps)) {
-                          continue;
-                        }
-
-                        for (const dep of packageFile.deps) {
-                          if (!Array.isArray(dep?.updates)) {
-                            continue;
-                          }
-
-                          for (const update of dep.updates) {
-                            if (!update || typeof update.branchName !== "string") {
-                              continue;
-                            }
-
-                            const depNameValue = update.depName ?? dep.depName ?? update.packageName ?? dep.packageName;
-                            const depName = typeof depNameValue === "string" ? depNameValue : null;
-                            const sourceUrlValue = update.sourceUrl ?? dep.sourceUrl;
-                            const packageNameValue = update.packageName ?? dep.packageName;
-                            const currentVersionValue = update.currentVersion ?? dep.currentVersion;
-                            const currentValueValue = update.currentValue ?? dep.currentValue;
-                            const previous = extractedUpdates.get(update.branchName);
-                            const expectedLabels = [
-                              ...new Set([
-                                ...(previous?.expectedLabels ?? []),
-                                ...normalizeLabels(dep.labels),
-                                ...normalizeLabels(dep.addLabels),
-                                ...normalizeLabels(update.labels),
-                                ...normalizeLabels(update.addLabels),
-                              ]),
-                            ].sort((left, right) => left.localeCompare(right));
-
-                            extractedUpdates.set(update.branchName, {
-                              branchName: update.branchName,
-                              manager: previous?.manager ?? manager,
-                              packageFile: previous?.packageFile ?? (typeof packageFile.packageFile === "string" ? packageFile.packageFile : null),
-                              depName: previous?.depName ?? depName,
-                              depNameSanitized: previous?.depNameSanitized ?? (depName ? sanitizeDepName(depName) : null),
-                              packageName: previous?.packageName ?? (typeof packageNameValue === "string" ? packageNameValue : null),
-                              sourceUrl: previous?.sourceUrl ?? (typeof sourceUrlValue === "string" ? sourceUrlValue : null),
-                              updateType: previous?.updateType ?? (typeof update.updateType === "string" ? update.updateType : null),
-                              currentVersion: previous?.currentVersion ?? (typeof currentVersionValue === "string" ? currentVersionValue : null),
-                              currentValue: previous?.currentValue ?? (typeof currentValueValue === "string" ? currentValueValue : null),
-                              currentDigestShort: previous?.currentDigestShort ?? shortenDigest(update.currentDigest ?? dep.currentDigest),
-                              newVersion: previous?.newVersion ?? (typeof update.newVersion === "string" ? update.newVersion : null),
-                              newValue: previous?.newValue ?? (typeof update.newValue === "string" ? update.newValue : null),
-                              newDigestShort: previous?.newDigestShort ?? shortenDigest(update.newDigest),
-                              expectedLabels,
-                            });
-                          }
-                        }
-                      }
-                    }
-
-                    branchUpdates = Array.from(extractedUpdates.values())
-                      .sort((left, right) => left.branchName.localeCompare(right.branchName));
-                    branchUpdatesKnown = true;
-                  }
-                } catch (error) {
-                  // Ignore non-JSON log lines.
-                }
-              }
-            } else {
-              core.warning(`Renovate did not create a log file at ${process.env.LOG_PATH}; stale-close and label reconciliation metadata will be unavailable.`);
-            }
-
-            if (!activeBranchesKnown) {
-              core.warning("Unable to extract the authoritative Renovate branch list from the log file.");
-            }
-
-            if (!branchUpdatesKnown) {
-              core.warning("Unable to extract Renovate branch update metadata from the log file.");
-            }
-
-            core.setOutput("active_branches", JSON.stringify(activeBranches));
-            core.setOutput("active_branches_known", String(activeBranchesKnown));
-            core.setOutput("branch_updates", JSON.stringify(branchUpdates));
-            core.setOutput("branch_updates_known", String(branchUpdatesKnown));
-      - name: Refresh wait checks
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          ACTIVE_BRANCHES: ${{ steps.extract_branch_metadata.outputs.active_branches }}
-          ACTIVE_BRANCHES_KNOWN: ${{ steps.extract_branch_metadata.outputs.active_branches_known }}
-          BRANCH_UPDATES: ${{ steps.extract_branch_metadata.outputs.branch_updates }}
-          BRANCH_UPDATES_KNOWN: ${{ steps.extract_branch_metadata.outputs.branch_updates_known }}
-          TARGET_REPOSITORY: ${{ steps.resolve_repository.outputs.repository }}
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const ref = context.ref.startsWith("refs/heads/") ? context.ref.slice("refs/heads/".length) : "main";
-
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: "renovate-merge-gate.yaml",
-              ref,
-              inputs: {
-                active_branches: process.env.ACTIVE_BRANCHES,
-                active_branches_known: process.env.ACTIVE_BRANCHES_KNOWN,
-                branch_updates: process.env.BRANCH_UPDATES,
-                branch_updates_known: process.env.BRANCH_UPDATES_KNOWN,
-                repository: process.env.TARGET_REPOSITORY,
-              },
-            });

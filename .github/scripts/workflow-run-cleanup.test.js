@@ -252,7 +252,7 @@ test("summarizes run counts by workflow descriptor", () => {
 			},
 			{
 				id: 3,
-				name: "Renovate merge gate",
+				name: "Workflow run cleanup",
 			},
 		],
 	});
@@ -265,7 +265,7 @@ test("summarizes run counts by workflow descriptor", () => {
 				count: 2,
 			},
 			{
-				workflow: "Renovate merge gate",
+				workflow: "Workflow run cleanup",
 				count: 1,
 			},
 		],
