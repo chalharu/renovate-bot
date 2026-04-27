@@ -1,9 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "github>chalharu/renovate-config"
+    "config:recommended",
+    ":disableRateLimiting",
+    ":dependencyDashboard"
   ],
-  "pruneStaleBranches": false,
+  "timezone": "Asia/Tokyo",
+  "configMigration": true,
+  "configWarningReuseIssue": false,
+  "labels": [
+    "renovate"
+  ],
+  "rebaseWhen": "behind-base-branch",
+  "pruneStaleBranches": true,
   "separateMajorMinor": true,
   "separateMinorPatch": true,
   "separateMultipleMajor": true,
@@ -11,30 +20,24 @@
   "automerge": true,
   "automergeStrategy": "auto",
   "platformAutomerge": false,
+  "pinDigests": true,
+  "internalChecksFilter": "none",
+  "prCreation": "immediate",
   "vulnerabilityAlerts": {
     "enabled": true,
     "labels": [
       "renovate",
       "security"
-    ]
+    ],
+    "minimumReleaseAge": null,
   },
-  "packageRules": [
-    {
-      "description": "Give each target version or digest its own Renovate branch and opt this repository into a 3-day gate via labels",
-      "matchUpdateTypes": [
-        "digest",
-        "major",
-        "minor",
-        "patch",
-        "pin",
-        "pinDigest"
-      ],
-      "addLabels": [
-        "renovate-gate-wait-3d"
-      ],
-      "branchTopic": "{{{depNameSanitized}}}{{#if newVersion}}__v{{{newVersion}}}{{/if}}{{#if newDigestShort}}__d{{{newDigestShort}}}{{/if}}"
-    }
-  ],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "rangeStrategy": "pin",
+  "timezone": "Asia/Tokyo",
+  "minimumReleaseAge": "3 days",
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
   "customManagers": [
     {
       "customType": "regex",
