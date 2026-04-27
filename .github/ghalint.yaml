@@ -6,3 +6,9 @@ excludes:
     workflow_file_path: .github/workflows/renovate.yaml
     job_name: enumerate_repositories
     step_id: get_token
+  # The per-repository Renovate job needs installation-wide read access briefly so it can
+  # resolve the masked matrix entry back to the intended repository before scoping the main token.
+  - policy_name: github_app_should_limit_repositories
+    workflow_file_path: .github/workflows/renovate.yaml
+    job_name: renovate
+    step_id: get_repository_list_token
