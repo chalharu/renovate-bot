@@ -107,7 +107,7 @@ jobs:
             const {
               buildRepositoryMatrix,
               buildRepositorySelectionMap,
-              filterCandidateRepositories,
+              filterEligibleRepositories,
               maskPrivateRepositories,
               toEligibleRepository,
             } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
@@ -115,10 +115,11 @@ jobs:
             const repositories = await github.paginate("GET /installation/repositories", {
               per_page: 100,
             });
-            const accessibleRepositories = filterCandidateRepositories({
+            const accessibleRepositories = (await filterEligibleRepositories({
+              github,
               repositories,
               owner: context.repo.owner,
-            }).map(toEligibleRepository);
+            })).map(toEligibleRepository);
 
             maskPrivateRepositories({ core, repositories: accessibleRepositories });
             core.setOutput("matrix", JSON.stringify(buildRepositoryMatrix({
@@ -164,21 +165,17 @@ jobs:
           script: |
             const path = require("node:path");
             const {
-              filterCandidateRepositories,
               maskPrivateRepositories,
-              resolveRepositorySelection,
-              toEligibleRepository,
+              resolveEligibleRepositorySelection,
             } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
             const repositories = await github.paginate("GET /installation/repositories", {
               per_page: 100,
             });
-            const accessibleRepositories = filterCandidateRepositories({
+            const selectionMap = JSON.parse(process.env.SELECTION_MAP || "[]");
+            const repository = await resolveEligibleRepositorySelection({
+              github,
               repositories,
               owner: context.repo.owner,
-            }).map(toEligibleRepository);
-            const selectionMap = JSON.parse(process.env.SELECTION_MAP || "[]");
-            const repository = resolveRepositorySelection({
-              repositories: accessibleRepositories,
               selectionMap,
               repository: process.env.REPOSITORY,
               repositoryIndex: process.env.REPOSITORY_INDEX,
