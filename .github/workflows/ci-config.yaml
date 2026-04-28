@@ -10,8 +10,6 @@ on:
       - '.renovaterc'
       - '.renovaterc.json5?'
       - '.github/workflows/ci-config.yaml'
-      - '.github/workflows/workflow-run-cleanup.yaml'
-      - '.github/workflows/renovate-merge-gate.yaml'
       - '.github/workflows/renovate.yaml'
       - 'package.json'
 permissions:
@@ -21,8 +19,8 @@ jobs:
     permissions:
       contents: read
     uses: chalharu/workflows/.github/workflows/renovate-ci.yaml@80acd0f7698de276f45e09882e7e86b78ac23ce4 # main
-  wait_anchor_regression:
-    name: Wait anchor regression
+  workflow_helper_regression:
+    name: Workflow helper regression
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -32,7 +30,5 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Run merge-gate wait-anchor tests
-        run: node --test .github/scripts/renovate-merge-gate-*.test.js
-      - name: Run cleanup helper tests
-        run: node --test .github/scripts/workflow-run-cleanup.test.js
+      - name: Run repository workflow helper tests
+        run: node --test .github/scripts/renovate-repositories.test.js
