@@ -10,7 +10,6 @@ on:
       - '.renovaterc'
       - '.renovaterc.json5?'
       - '.github/workflows/ci-config.yaml'
-      - '.github/workflows/workflow-run-cleanup.yaml'
       - '.github/workflows/renovate.yaml'
       - 'package.json'
 permissions:
@@ -33,5 +32,3 @@ jobs:
           persist-credentials: false
       - name: Run repository workflow helper tests
         run: node --test .github/scripts/renovate-repositories.test.js
-      - name: Run cleanup helper tests
-        run: node --test .github/scripts/workflow-run-cleanup.test.js

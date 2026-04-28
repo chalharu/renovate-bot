@@ -1,7 +1,8 @@
 rules:
   secrets-outside-env:
-    ignore:
-      - renovate.yaml:97
-      - renovate.yaml:152
-      - renovate.yaml:196
-      - renovate.yaml:220
+    config:
+      allow:
+        - APP_ID
+        - PRIVATE_KEY
+        - DOCKERHUB_USERNAME
+        - DOCKERHUB_TOKEN
