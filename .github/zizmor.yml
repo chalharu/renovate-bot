@@ -2,7 +2,7 @@ rules:
   secrets-outside-env:
     config:
       allow:
-        - APP_ID
+        - APP_CLIENT_ID
         - PRIVATE_KEY
         - DOCKERHUB_USERNAME
         - DOCKERHUB_TOKEN

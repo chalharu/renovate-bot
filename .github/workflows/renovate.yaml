@@ -12,7 +12,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      client_id: ${{ steps.resolve_app_client_id.outputs.client_id }}
       matrix: ${{ steps.list_repositories.outputs.matrix }}
       repository_count: ${{ steps.list_repositories.outputs.repository_count }}
       selection_map: ${{ steps.list_repositories.outputs.selection_map }}
@@ -21,79 +20,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Resolve GitHub App client ID
-        id: resolve_app_client_id
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          CONFIGURED_CLIENT_ID: ${{ vars.APP_CLIENT_ID }}
-          LEGACY_APP_ID: ${{ secrets.APP_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-        with:
-          script: |
-            const crypto = require("node:crypto");
-            const configuredClientId = (process.env.CONFIGURED_CLIENT_ID ?? "").trim();
-            if (configuredClientId.length > 0) {
-              core.setOutput("client_id", configuredClientId);
-              return;
-            }
-
-            const legacyAppId = (process.env.LEGACY_APP_ID ?? "").trim();
-            if (legacyAppId.length === 0) {
-              throw new Error("Configure vars.APP_CLIENT_ID or secrets.APP_ID with a GitHub App identifier.");
-            }
-
-            if (legacyAppId.startsWith("Iv1.")) {
-              core.setOutput("client_id", legacyAppId);
-              return;
-            }
-
-            if (!/^\d+$/.test(legacyAppId)) {
-              throw new Error("secrets.APP_ID must contain either a GitHub App client ID or a numeric GitHub App ID.");
-            }
-
-            const privateKey = process.env.APP_PRIVATE_KEY ?? "";
-            if (privateKey.length === 0) {
-              throw new Error("Missing GitHub App private key.");
-            }
-
-            core.setSecret(legacyAppId);
-            core.setSecret(privateKey);
-
-            const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-            const now = Math.floor(Date.now() / 1000);
-            const encodedHeader = encode({ alg: "RS256", typ: "JWT" });
-            const encodedPayload = encode({
-              iat: now - 60,
-              exp: now + 540,
-              iss: legacyAppId,
-            });
-            const signer = crypto.createSign("RSA-SHA256");
-            signer.update(`${encodedHeader}.${encodedPayload}`);
-            signer.end();
-            const jwt = `${encodedHeader}.${encodedPayload}.${signer.sign(privateKey, "base64url")}`;
-            const response = await fetch(`${process.env.GITHUB_API_URL ?? "https://api.github.com"}/app`, {
-              headers: {
-                Accept: "application/vnd.github+json",
-                Authorization: `Bearer ${jwt}`,
-                "X-GitHub-Api-Version": "2022-11-28",
-              },
-            });
-
-            if (!response.ok) {
-              throw new Error(`Unable to resolve the GitHub App client ID (status: ${response.status})`);
-            }
-
-            const app = await response.json();
-            if (typeof app.client_id !== "string" || app.client_id.trim().length === 0) {
-              throw new Error("The GitHub App client ID was missing from the /app response.");
-            }
-
-            core.setOutput("client_id", app.client_id.trim());
       - name: Get token
         id: get_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
-          client-id: ${{ steps.resolve_app_client_id.outputs.client_id }}
+          client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
@@ -107,7 +38,7 @@ jobs:
             const {
               buildRepositoryMatrix,
               buildRepositorySelectionMap,
-              filterCandidateRepositories,
+              filterEligibleRepositories,
               maskPrivateRepositories,
               toEligibleRepository,
             } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
@@ -115,10 +46,11 @@ jobs:
             const repositories = await github.paginate("GET /installation/repositories", {
               per_page: 100,
             });
-            const accessibleRepositories = filterCandidateRepositories({
+            const accessibleRepositories = (await filterEligibleRepositories({
+              github,
               repositories,
               owner: context.repo.owner,
-            }).map(toEligibleRepository);
+            })).map(toEligibleRepository);
 
             maskPrivateRepositories({ core, repositories: accessibleRepositories });
             core.setOutput("matrix", JSON.stringify(buildRepositoryMatrix({
@@ -148,7 +80,7 @@ jobs:
         id: get_repository_list_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
-          client-id: ${{ needs.enumerate_repositories.outputs.client_id }}
+          client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
@@ -164,21 +96,17 @@ jobs:
           script: |
             const path = require("node:path");
             const {
-              filterCandidateRepositories,
               maskPrivateRepositories,
-              resolveRepositorySelection,
-              toEligibleRepository,
+              resolveEligibleRepositorySelection,
             } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
             const repositories = await github.paginate("GET /installation/repositories", {
               per_page: 100,
             });
-            const accessibleRepositories = filterCandidateRepositories({
+            const selectionMap = JSON.parse(process.env.SELECTION_MAP || "[]");
+            const repository = await resolveEligibleRepositorySelection({
+              github,
               repositories,
               owner: context.repo.owner,
-            }).map(toEligibleRepository);
-            const selectionMap = JSON.parse(process.env.SELECTION_MAP || "[]");
-            const repository = resolveRepositorySelection({
-              repositories: accessibleRepositories,
               selectionMap,
               repository: process.env.REPOSITORY,
               repositoryIndex: process.env.REPOSITORY_INDEX,
@@ -192,7 +120,7 @@ jobs:
         id: get_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
-          client-id: ${{ needs.enumerate_repositories.outputs.client_id }}
+          client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
           owner: ${{ steps.resolve_repository.outputs.owner }}
           repositories: ${{ steps.resolve_repository.outputs.repository }}
