@@ -107,8 +107,10 @@ jobs:
           script: |
             const path = require("node:path");
             const {
+              formatRepositoryLogLevelLog,
               maskPrivateRepositories,
               resolveEligibleRepositorySelection,
+              resolveRepositoryLogLevel,
             } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
             const repositories = await github.paginate("GET /installation/repositories", {
               per_page: 100,
@@ -123,6 +125,7 @@ jobs:
               repositoryIndex: process.env.REPOSITORY_INDEX,
             });
             maskPrivateRepositories({ core, repositories: [repository] });
+            const logLevel = resolveRepositoryLogLevel({ repository });
 
             if (repository.private) {
               core.info("Selected private repository for Renovate (details masked).");
@@ -130,10 +133,20 @@ jobs:
               core.info(`Selected public repository ${repository.full_name} for Renovate.`);
             }
 
+            const logLevelMessage = formatRepositoryLogLevelLog({
+              repository,
+              logLevel,
+            });
+
+            if (logLevelMessage) {
+              core.info(logLevelMessage);
+            }
+
             core.setOutput("owner", repository.owner);
             core.setOutput("repository", repository.repository);
             core.setOutput("full_name", repository.full_name);
             core.setOutput("private", repository.private ? "true" : "false");
+            core.setOutput("log_level", logLevel);
       - name: Get token
         id: get_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
@@ -203,7 +216,7 @@ jobs:
         with:
           # Managed by Renovate via renovate.json customManagers.
           configurationFile: renovate.json
-          renovate-version: 43.141.5
+          renovate-version: 43.141.3
           token: '${{ steps.get_token.outputs.token }}'
         env:
           RENOVATE_AUTODISCOVER: "false"
@@ -212,4 +225,4 @@ jobs:
           RENOVATE_ONBOARDING: "false"
           RENOVATE_PLATFORM_COMMIT: "true"
           RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
-          LOG_LEVEL: warn
+          LOG_LEVEL: ${{ steps.resolve_repository.outputs.log_level }}

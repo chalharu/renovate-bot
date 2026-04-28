@@ -7,6 +7,7 @@ const {
 	filterCandidateRepositories,
 	filterEligibleRepositories,
 	formatPublicRepositoryEligibilityLog,
+	formatRepositoryLogLevelLog,
 	hasPackageJsonRenovateConfig,
 	hasSupportedRenovateConfig,
 	inspectRepositoryCandidate,
@@ -14,6 +15,7 @@ const {
 	maskPrivateRepositories,
 	probeDependabotAlertAccess,
 	resolveEligibleRepositorySelection,
+	resolveRepositoryLogLevel,
 	resolveRepositorySelection,
 	toEligibleRepository,
 } = require("./renovate-repositories");
@@ -400,6 +402,50 @@ test("formats public repository eligibility log lines without exposing private n
 			},
 		}),
 		null,
+	);
+});
+
+test("resolves repository log levels with a repository-specific override", () => {
+	assert.equal(
+		resolveRepositoryLogLevel({
+			repository: {
+				full_name: "chalharu/renovate-bot",
+			},
+		}),
+		"debug",
+	);
+
+	assert.equal(
+		resolveRepositoryLogLevel({
+			repository: {
+				full_name: "octo-org/public-repo",
+			},
+		}),
+		"warn",
+	);
+});
+
+test("formats repository log level lines without exposing private names", () => {
+	assert.equal(
+		formatRepositoryLogLevelLog({
+			repository: {
+				full_name: "chalharu/renovate-bot",
+				private: false,
+			},
+			logLevel: "debug",
+		}),
+		"Using Renovate log level debug for public repository chalharu/renovate-bot.",
+	);
+
+	assert.equal(
+		formatRepositoryLogLevelLog({
+			repository: {
+				full_name: "octo-org/private-repo",
+				private: true,
+			},
+			logLevel: "warn",
+		}),
+		"Using configured Renovate log level for selected private repository (details masked).",
 	);
 });
 

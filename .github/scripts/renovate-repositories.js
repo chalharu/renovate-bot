@@ -58,6 +58,27 @@ const createEligibilityLookupError = (error) =>
 		`Unable to determine repository eligibility (status: ${error?.status ?? "unknown"})`,
 	);
 
+const debugLogLevelRepository = "chalharu/renovate-bot";
+
+const resolveRepositoryLogLevel = ({ repository } = {}) =>
+	repository?.full_name === debugLogLevelRepository ? "debug" : "warn";
+
+const formatRepositoryLogLevelLog = ({ repository, logLevel } = {}) => {
+	if (!repository || typeof logLevel !== "string") {
+		return null;
+	}
+
+	if (repository.private) {
+		return "Using configured Renovate log level for selected private repository (details masked).";
+	}
+
+	if (!repository.full_name) {
+		return null;
+	}
+
+	return `Using Renovate log level ${logLevel} for public repository ${repository.full_name}.`;
+};
+
 const inspectRepositoryCandidate = ({ repository, owner } = {}) => {
 	if (repository?.owner?.login !== owner) {
 		return {
@@ -532,6 +553,7 @@ module.exports = {
 	filterCandidateRepositories,
 	filterEligibleRepositories,
 	formatPublicRepositoryEligibilityLog,
+	formatRepositoryLogLevelLog,
 	hasPackageJsonRenovateConfig,
 	hasSupportedRenovateConfig,
 	inspectRepositoryCandidate,
@@ -540,6 +562,7 @@ module.exports = {
 	maskPrivateRepositories,
 	probeDependabotAlertAccess,
 	resolveEligibleRepositorySelection,
+	resolveRepositoryLogLevel,
 	resolveRepositorySelection,
 	supportedConfigPaths,
 	toEligibleRepository,
