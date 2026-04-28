@@ -155,13 +155,13 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY }}
           owner: ${{ steps.resolve_repository.outputs.owner }}
           repositories: ${{ steps.resolve_repository.outputs.repository }}
-          # Renovate reads both check runs and commit statuses before it can automerge PRs.
+          # Renovate reads check runs and writes commit statuses for branch stability checks.
           permission-checks: read
           permission-contents: write
           permission-vulnerability-alerts: read
           permission-issues: write
           permission-pull-requests: write
-          permission-statuses: read
+          permission-statuses: write
           permission-workflows: write
       - name: Probe Dependabot alert access
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0

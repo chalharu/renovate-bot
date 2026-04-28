@@ -1,4 +1,6 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
@@ -447,6 +449,16 @@ test("formats repository log level lines without exposing private names", () => 
 		}),
 		"Using configured Renovate log level for selected private repository (details masked).",
 	);
+});
+
+test("requests write access for commit statuses in the Renovate workflow", () => {
+	const workflow = fs.readFileSync(
+		path.join(__dirname, "../workflows/renovate.yaml"),
+		"utf8",
+	);
+
+	assert.match(workflow, /permission-statuses:\s*write(?:\s|$)/);
+	assert.doesNotMatch(workflow, /permission-statuses:\s*read(?:\s|$)/);
 });
 
 test("builds a mixed repository matrix without exposing private repository names", () => {
