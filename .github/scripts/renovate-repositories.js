@@ -58,6 +58,34 @@ const createEligibilityLookupError = (error) =>
 		`Unable to determine repository eligibility (status: ${error?.status ?? "unknown"})`,
 	);
 
+const inspectRepositoryCandidate = ({ repository, owner } = {}) => {
+	if (repository?.owner?.login !== owner) {
+		return {
+			candidate: false,
+			reason: "repository owner does not match the workflow owner",
+		};
+	}
+
+	if (repository?.archived) {
+		return {
+			candidate: false,
+			reason: "repository is archived",
+		};
+	}
+
+	if (repository?.disabled) {
+		return {
+			candidate: false,
+			reason: "repository is disabled",
+		};
+	}
+
+	return {
+		candidate: true,
+		reason: "repository is active for the workflow owner",
+	};
+};
+
 const listRepositoryEntries = async ({
 	github,
 	repository,
@@ -104,15 +132,16 @@ const filterCandidateRepositories = ({ repositories = [], owner } = {}) =>
 			(Array.isArray(repositories) ? repositories : [])
 				.filter(
 					(repository) =>
-						repository?.owner?.login === owner &&
-						!repository.archived &&
-						!repository.disabled,
+						inspectRepositoryCandidate({
+							repository,
+							owner,
+						}).candidate,
 				)
 				.map((repository) => [repository.full_name, repository]),
 		).values(),
 	].sort((left, right) => left.full_name.localeCompare(right.full_name));
 
-const hasSupportedRenovateConfig = async ({ github, repository } = {}) => {
+const inspectSupportedRenovateConfig = async ({ github, repository } = {}) => {
 	if (
 		!github?.rest?.repos?.getContent ||
 		!repository?.owner?.login ||
@@ -133,7 +162,11 @@ const hasSupportedRenovateConfig = async ({ github, repository } = {}) => {
 
 	for (const path of rootSupportedConfigPaths) {
 		if (rootEntryNames.has(path)) {
-			return true;
+			return {
+				eligible: true,
+				configPath: path,
+				reason: `supported Renovate config found at ${path}`,
+			};
 		}
 	}
 
@@ -145,7 +178,11 @@ const hasSupportedRenovateConfig = async ({ github, repository } = {}) => {
 		});
 
 		if (hasPackageJsonRenovateConfig({ contentData: packageJsonContent })) {
-			return true;
+			return {
+				eligible: true,
+				configPath: "package.json#renovate",
+				reason: "supported Renovate config found in package.json#renovate",
+			};
 		}
 	}
 
@@ -166,11 +203,65 @@ const hasSupportedRenovateConfig = async ({ github, repository } = {}) => {
 					typeof entry?.name === "string" && supportedFiles.has(entry.name),
 			)
 		) {
-			return true;
+			const matchedEntry = nestedEntries.find(
+				(entry) =>
+					typeof entry?.name === "string" && supportedFiles.has(entry.name),
+			);
+
+			return {
+				eligible: true,
+				configPath: `${directoryPath}/${matchedEntry.name}`,
+				reason: `supported Renovate config found at ${directoryPath}/${matchedEntry.name}`,
+			};
 		}
 	}
 
-	return false;
+	return {
+		eligible: false,
+		configPath: null,
+		reason: "no supported Renovate config was found",
+	};
+};
+
+const hasSupportedRenovateConfig = async ({ github, repository } = {}) => {
+	const inspection = await inspectSupportedRenovateConfig({
+		github,
+		repository,
+	});
+
+	return inspection.eligible;
+};
+
+const inspectRepositoryEligibility = async ({
+	github,
+	repository,
+	owner,
+} = {}) => {
+	const candidateInspection = inspectRepositoryCandidate({
+		repository,
+		owner,
+	});
+
+	if (!candidateInspection.candidate) {
+		return {
+			candidate: false,
+			eligible: false,
+			configPath: null,
+			reason: candidateInspection.reason,
+		};
+	}
+
+	const configInspection = await inspectSupportedRenovateConfig({
+		github,
+		repository,
+	});
+
+	return {
+		candidate: true,
+		eligible: configInspection.eligible,
+		configPath: configInspection.configPath,
+		reason: configInspection.reason,
+	};
 };
 
 const filterEligibleRepositories = async ({
@@ -178,6 +269,7 @@ const filterEligibleRepositories = async ({
 	repositories = [],
 	owner,
 	maxConcurrency = 8,
+	onInspect,
 } = {}) => {
 	const candidateRepositories = filterCandidateRepositories({
 		repositories,
@@ -201,7 +293,17 @@ const filterEligibleRepositories = async ({
 				}
 
 				const repository = candidateRepositories[repositoryIndex];
-				if (await hasSupportedRenovateConfig({ github, repository })) {
+				const inspection = await inspectRepositoryEligibility({
+					github,
+					repository,
+					owner,
+				});
+
+				if (typeof onInspect === "function") {
+					await onInspect({ repository, inspection });
+				}
+
+				if (inspection.eligible) {
 					eligibleRepositories[repositoryIndex] = repository;
 				}
 			}
@@ -250,6 +352,74 @@ const resolveEligibleRepositorySelection = async ({
 	}
 
 	return selectedRepository;
+};
+
+const formatPublicRepositoryEligibilityLog = ({
+	repository,
+	inspection,
+} = {}) => {
+	if (repository?.private || !repository?.full_name || !inspection) {
+		return null;
+	}
+
+	if (inspection.eligible) {
+		return `Including public repository ${repository.full_name} (supported Renovate config: ${inspection.configPath}).`;
+	}
+
+	return `Skipping public repository ${repository.full_name} (${inspection.reason}).`;
+};
+
+const probeDependabotAlertAccess = async ({ github, repository } = {}) => {
+	if (!github?.request || !repository?.owner || !repository?.repository) {
+		throw new Error("A GitHub client and repository details are required");
+	}
+
+	try {
+		await github.request("GET /repos/{owner}/{repo}/dependabot/alerts", {
+			owner: repository.owner,
+			repo: repository.repository,
+			per_page: 1,
+			state: "open",
+			headers: {
+				accept: "application/vnd.github+json",
+			},
+		});
+
+		return {
+			ok: true,
+			status: 200,
+			reason:
+				"Dependabot alerts are accessible with the current installation token",
+		};
+	} catch (error) {
+		const errorMessage = String(error?.message ?? "").toLowerCase();
+
+		if (error?.status === 403) {
+			const isPermissionDenied =
+				errorMessage.includes("resource not accessible by integration") ||
+				errorMessage.includes("must have admin rights to repository");
+
+			if (isPermissionDenied) {
+				return {
+					ok: false,
+					status: 403,
+					reason:
+						"Dependabot alert access is denied for the current installation token",
+				};
+			}
+		}
+
+		if (error?.status === 404) {
+			return {
+				ok: false,
+				status: 404,
+				reason:
+					"Dependabot alerts are unavailable or inaccessible for the current installation token",
+			};
+		}
+
+		throw error;
+	}
 };
 
 const toEligibleRepository = (repository) => ({
@@ -361,9 +531,14 @@ module.exports = {
 	buildRepositorySelectionMap,
 	filterCandidateRepositories,
 	filterEligibleRepositories,
+	formatPublicRepositoryEligibilityLog,
 	hasPackageJsonRenovateConfig,
 	hasSupportedRenovateConfig,
+	inspectRepositoryCandidate,
+	inspectRepositoryEligibility,
+	inspectSupportedRenovateConfig,
 	maskPrivateRepositories,
+	probeDependabotAlertAccess,
 	resolveEligibleRepositorySelection,
 	resolveRepositorySelection,
 	supportedConfigPaths,
