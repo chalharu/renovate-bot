@@ -6,9 +6,13 @@ const {
 	buildRepositorySelectionMap,
 	filterCandidateRepositories,
 	filterEligibleRepositories,
+	formatPublicRepositoryEligibilityLog,
 	hasPackageJsonRenovateConfig,
 	hasSupportedRenovateConfig,
+	inspectRepositoryCandidate,
+	inspectSupportedRenovateConfig,
 	maskPrivateRepositories,
+	probeDependabotAlertAccess,
 	resolveEligibleRepositorySelection,
 	resolveRepositorySelection,
 	toEligibleRepository,
@@ -64,6 +68,24 @@ test("filters to non-archived repositories for the current owner and sorts them"
 	assert.deepEqual(
 		filteredRepositories.map((repository) => repository.full_name),
 		["octo-org/beta", "octo-org/zeta"],
+	);
+});
+
+test("inspects candidate repositories with explicit skip reasons", () => {
+	assert.deepEqual(
+		inspectRepositoryCandidate({
+			owner: "octo-org",
+			repository: {
+				full_name: "octo-org/archived",
+				owner: { login: "octo-org" },
+				archived: true,
+				disabled: false,
+			},
+		}),
+		{
+			candidate: false,
+			reason: "repository is archived",
+		},
 	);
 });
 
@@ -144,6 +166,45 @@ test("detects supported renovate config files across supported paths", async () 
 
 	assert.equal(result, true);
 	assert.deepEqual(requestedPaths, ["", ".github"]);
+});
+
+test("reports the matching config path when inspecting renovate config eligibility", async () => {
+	const result = await inspectSupportedRenovateConfig({
+		github: {
+			rest: {
+				repos: {
+					async getContent({ path }) {
+						if (path === "") {
+							return {
+								data: [{ name: ".github", type: "dir" }],
+							};
+						}
+
+						if (path === ".github") {
+							return {
+								data: [{ name: "renovate.json5", type: "file" }],
+							};
+						}
+
+						const error = new Error("Not Found");
+						error.status = 404;
+						throw error;
+					},
+				},
+			},
+		},
+		repository: {
+			name: "example",
+			full_name: "octo-org/example",
+			owner: { login: "octo-org" },
+		},
+	});
+
+	assert.deepEqual(result, {
+		eligible: true,
+		configPath: ".github/renovate.json5",
+		reason: "supported Renovate config found at .github/renovate.json5",
+	});
 });
 
 test("detects supported package.json renovate config", async () => {
@@ -309,6 +370,36 @@ test("filters repositories to supported renovate configs while preserving candid
 	assert.deepEqual(
 		filteredRepositories.map((repository) => repository.full_name),
 		["octo-org/alpha", "octo-org/private-repo"],
+	);
+});
+
+test("formats public repository eligibility log lines without exposing private names", () => {
+	assert.equal(
+		formatPublicRepositoryEligibilityLog({
+			repository: {
+				full_name: "octo-org/public-repo",
+				private: false,
+			},
+			inspection: {
+				eligible: true,
+				configPath: ".renovaterc",
+			},
+		}),
+		"Including public repository octo-org/public-repo (supported Renovate config: .renovaterc).",
+	);
+
+	assert.equal(
+		formatPublicRepositoryEligibilityLog({
+			repository: {
+				full_name: "octo-org/private-repo",
+				private: true,
+			},
+			inspection: {
+				eligible: false,
+				reason: "no supported Renovate config was found",
+			},
+		}),
+		null,
 	);
 });
 
@@ -613,5 +704,87 @@ test("converts GitHub API repositories into the persisted workflow format", () =
 			full_name: "octo-org/example",
 			private: true,
 		},
+	);
+});
+
+test("probes effective Dependabot alert access with the current installation token", async () => {
+	const successResult = await probeDependabotAlertAccess({
+		github: {
+			async request(route, params) {
+				assert.equal(route, "GET /repos/{owner}/{repo}/dependabot/alerts");
+				assert.equal(params.owner, "octo-org");
+				assert.equal(params.repo, "public-repo");
+			},
+		},
+		repository: {
+			owner: "octo-org",
+			repository: "public-repo",
+		},
+	});
+
+	assert.deepEqual(successResult, {
+		ok: true,
+		status: 200,
+		reason:
+			"Dependabot alerts are accessible with the current installation token",
+	});
+
+	const forbiddenResult = await probeDependabotAlertAccess({
+		github: {
+			async request() {
+				const error = new Error("Resource not accessible by integration");
+				error.status = 403;
+				throw error;
+			},
+		},
+		repository: {
+			owner: "octo-org",
+			repository: "public-repo",
+		},
+	});
+
+	assert.deepEqual(forbiddenResult, {
+		ok: false,
+		status: 403,
+		reason:
+			"Dependabot alert access is denied for the current installation token",
+	});
+});
+
+test("rethrows unexpected Dependabot alert probe failures", async () => {
+	await assert.rejects(
+		probeDependabotAlertAccess({
+			github: {
+				async request() {
+					const error = new Error("Service Unavailable");
+					error.status = 503;
+					throw error;
+				},
+			},
+			repository: {
+				owner: "octo-org",
+				repository: "public-repo",
+			},
+		}),
+		(error) => error?.status === 503,
+	);
+});
+
+test("rethrows unexpected 403 Dependabot alert probe failures", async () => {
+	await assert.rejects(
+		probeDependabotAlertAccess({
+			github: {
+				async request() {
+					const error = new Error("API rate limit exceeded");
+					error.status = 403;
+					throw error;
+				},
+			},
+			repository: {
+				owner: "octo-org",
+				repository: "public-repo",
+			},
+		}),
+		(error) => error?.status === 403,
 	);
 });
