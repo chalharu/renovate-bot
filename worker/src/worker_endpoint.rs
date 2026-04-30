@@ -116,8 +116,9 @@ async fn create_check_run(
 ) -> std::result::Result<(), String> {
     let client_id = required_binding(env, "GITHUB_APP_CLIENT_ID")?;
     let private_key = required_binding(env, "GITHUB_APP_PRIVATE_KEY")?;
-    let jwt =
-        create_github_app_jwt(&client_id, &private_key, now).map_err(|error| error.to_string())?;
+    let jwt = create_github_app_jwt(&client_id, &private_key, now)
+        .await
+        .map_err(|error| error.to_string())?;
     let installation = get_installation(&plan.repository_full_name, &jwt).await?;
     let installation_token = create_installation_token(installation.id, &jwt).await?;
     post_check_run(plan, &installation_token.token).await

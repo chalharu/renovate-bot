@@ -2,6 +2,7 @@
 name = "custom-stability-days"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 publish = false
 
 [lib]
@@ -17,8 +18,8 @@ sha2 = "=0.11.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 base64 = "=0.22.1"
-getrandom = { version = "=0.4.2", features = ["wasm_js"] }
 js-sys = "=0.3.97"
-rsa = { version = "=0.10.0-rc.18", features = ["sha2"] }
-signature = "=3.0.0-rc.10"
+wasm-bindgen = "=0.2.120"
+wasm-bindgen-futures = "=0.4.70"
+web-sys = { version = "=0.3.97", features = ["Crypto", "CryptoKey", "SubtleCrypto", "WorkerGlobalScope"] }
 worker = "=0.8.1"
