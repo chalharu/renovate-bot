@@ -11,6 +11,8 @@ on:
       - '.renovaterc.json5?'
       - '.github/workflows/ci-config.yaml'
       - '.github/workflows/renovate.yaml'
+      - 'worker/**'
+      - 'README.md'
       - 'package.json'
 permissions:
   contents: read
@@ -32,3 +34,31 @@ jobs:
           persist-credentials: false
       - name: Run repository workflow helper tests
         run: node --test .github/scripts/renovate-repositories.test.js
+  rust_worker_regression:
+    name: Rust Worker regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Worker target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Check Rust formatting
+        run: cargo fmt --check
+      - name: Check Rust Worker logic
+        run: cargo check
+      - name: Check Cloudflare Worker target
+        run: cargo check --target wasm32-unknown-unknown
+      - name: Run Rust tests
+        run: cargo test
+      - name: Install Worker build tool
+        run: cargo install worker-build --locked
+      - name: Build Cloudflare Worker
+        run: worker-build --release
