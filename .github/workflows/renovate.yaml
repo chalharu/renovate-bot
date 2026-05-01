@@ -1,4 +1,3 @@
----
 name: Renovate
 'on':
   workflow_dispatch:
@@ -100,8 +99,7 @@ jobs:
             );
   renovate:
     name: >-
-      Self-hosted Renovate (${{ matrix.repository ||
-      format('private-{0}', matrix.repository_index) }})
+      Self-hosted Renovate (${{ matrix.repository || format('private-{0}', matrix.repository_index) }})
     needs: enumerate_repositories
     if: ${{ needs.enumerate_repositories.outputs.repository_count != '0' }}
     strategy:
@@ -297,9 +295,7 @@ jobs:
           RENOVATE_LOG_CONTEXT: >-
             ${{ steps.resolve_repository.outputs.full_name }}
           RENOVATE_HOST_RULES: >-
-            [{"matchHost":"dhi.io","hostType":"docker",
-            "username":"${{ secrets.DOCKERHUB_USERNAME }}",
-            "password":"${{ secrets.DOCKERHUB_TOKEN }}"}]
+            [{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]
           LOG_CONTEXT: >-
             ${{ steps.resolve_repository.outputs.full_name }}
           LOG_FILE: ${{ runner.temp }}/renovate-log.jsonl
@@ -308,8 +304,7 @@ jobs:
           LOG_LEVEL: ${{ steps.resolve_repository.outputs.log_level }}
       - name: Reconcile custom stability-days checks
         if: >-
-          ${{ always() && steps.get_token.outcome == 'success' &&
-          steps.resolve_repository.outcome == 'success' }}
+          ${{ always() && steps.get_token.outcome == 'success' && steps.resolve_repository.outcome == 'success' }}
         # v9.0.0
         uses: >-
           actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3

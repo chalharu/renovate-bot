@@ -1,4 +1,3 @@
----
 name: Deploy Worker
 'on':
   workflow_dispatch:
@@ -9,7 +8,6 @@ name: Deploy Worker
       - '.github/workflows/deploy-worker.yaml'
       - 'worker/Cargo.lock'
       - 'worker/Cargo.toml'
-      - 'worker/rust-toolchain.toml'
       - 'worker/src/**'
       - 'worker/wrangler.toml'
 concurrency:
@@ -43,16 +41,13 @@ jobs:
             ~/.cargo/git/db/
             worker/target
           key: >-
-            worker-cargo-chef-${{ runner.os }}-${{
-            hashFiles(
-            'worker/Cargo.lock',
-            'worker/Cargo.toml',
-            'worker/rust-toolchain.toml'
-            ) }}
+            worker-deploy-cargo-chef-${{ runner.os }}-${{ hashFiles('worker/Cargo.lock', 'worker/Cargo.toml') }}
           restore-keys: |
-            worker-cargo-chef-${{ runner.os }}-
-      - name: Install Worker target
-        run: rustup target add wasm32-unknown-unknown
+            worker-deploy-cargo-chef-${{ runner.os }}-
+      - name: Install Worker Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --target wasm32-unknown-unknown
+      - name: Use Worker Rust toolchain
+        run: rustup default 1.95.0
       - name: Install cargo-chef
         run: cargo install cargo-chef --locked
       - name: Prepare cargo-chef recipe
@@ -60,9 +55,7 @@ jobs:
         run: cargo chef prepare --recipe-path recipe.json
       - name: Cook wasm dependencies with cargo-chef
         working-directory: worker
-        run: >-
-          cargo chef cook --recipe-path recipe.json
-          --target wasm32-unknown-unknown --release
+        run: cargo chef cook --recipe-path recipe.json --target wasm32-unknown-unknown --release
       - name: Deploy Worker
         id: deploy
         # v3.15.0
