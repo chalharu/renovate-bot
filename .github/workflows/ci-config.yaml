@@ -74,14 +74,6 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --target wasm32-unknown-unknown
       - name: Use Worker Rust toolchain
         run: rustup default 1.95.0
-      - name: Install cargo-chef
-        run: cargo +1.95.0 install cargo-chef --locked
-      - name: Prepare cargo-chef recipe
-        run: cargo +1.95.0 chef prepare --recipe-path recipe.json
-      - name: Cook host dependencies with cargo-chef
-        run: cargo +1.95.0 chef cook --recipe-path recipe.json
-      - name: Cook wasm dependencies with cargo-chef
-        run: cargo +1.95.0 chef cook --recipe-path recipe.json --target wasm32-unknown-unknown --release
       - name: Check Rust formatting
         run: cargo +1.95.0 fmt --check
       - name: Check Rust Worker logic
@@ -90,6 +82,14 @@ jobs:
         run: cargo +1.95.0 check --target wasm32-unknown-unknown
       - name: Run Rust tests
         run: cargo +1.95.0 test
+      - name: Install cargo-chef
+        run: cargo +1.95.0 install cargo-chef --locked
+      - name: Prepare cargo-chef recipe
+        run: cargo +1.95.0 chef prepare --recipe-path recipe.json
+      - name: Cook host dependencies with cargo-chef
+        run: cargo +1.95.0 chef cook --recipe-path recipe.json
+      - name: Cook wasm dependencies with cargo-chef
+        run: cargo +1.95.0 chef cook --recipe-path recipe.json --target wasm32-unknown-unknown --release
       - name: Install Worker build tool
         run: cargo +1.95.0 install worker-build --locked
       - name: Build Cloudflare Worker
