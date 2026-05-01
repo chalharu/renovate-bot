@@ -21,5 +21,10 @@ base64 = "=0.22.1"
 js-sys = "=0.3.97"
 wasm-bindgen = "=0.2.120"
 wasm-bindgen-futures = "=0.4.70"
-web-sys = { version = "=0.3.97", features = ["Crypto", "CryptoKey", "SubtleCrypto", "WorkerGlobalScope"] }
+web-sys = { version = "=0.3.97", features = [
+  "Crypto",
+  "CryptoKey",
+  "SubtleCrypto",
+  "WorkerGlobalScope",
+] }
 worker = "=0.8.1"

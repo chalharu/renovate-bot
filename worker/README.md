@@ -23,7 +23,7 @@ Supported pull request actions:
 - `labeled`
 - `unlabeled`
 
-### Waiting-period rules
+## Waiting-period rules
 
 For Renovate PRs, labels decide how long the check remains pending:
 
@@ -36,7 +36,7 @@ time as floored seconds divided by 86,400. Before the wait has elapsed the
 check run is sent as `in_progress`; after it has elapsed the check run is
 completed with a `success` conclusion.
 
-### Configuration
+## Configuration
 
 Wrangler variables/secrets:
 
@@ -51,7 +51,7 @@ Wrangler variables/secrets:
 The GitHub App needs permission to read repository installation metadata and
 write checks for repositories that receive the webhook.
 
-### Local validation
+## Local validation
 
 Run the Rust checks from this directory:
 
@@ -70,7 +70,7 @@ cargo install worker-build --locked
 worker-build --release
 ```
 
-### Deployment basics
+## Deployment basics
 
 Do not store secrets in `wrangler.toml`. Configure secrets with Wrangler before
 deploying:
