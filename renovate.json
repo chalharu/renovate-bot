@@ -34,8 +34,27 @@
 	"minimumReleaseAgeBehaviour": "timestamp-required",
 	"packageRules": [
 		{
-			"description": "Use the custom stability-days check for Docker registries without release timestamps.",
+			"description": "Disable release-age checks for update types without upstream release timestamps.",
+			"matchUpdateTypes": [
+				"pin",
+				"pinDigest",
+				"lockFileMaintenance",
+				"lockFileUpdate",
+				"rollback",
+				"bump",
+				"replacement"
+			],
+			"minimumReleaseAge": null
+		},
+		{
+			"description": "Use the custom stability-days check for non-Docker Hub Docker registries without release timestamps.",
 			"matchDatasources": ["docker"],
+			"matchPackageNames": [
+				"/^[^\\/]+[.:][^\\/]+\\//",
+				"!/^index\\.docker\\.io\\//",
+				"!/^docker\\.io\\//",
+				"!/^registry-1\\.docker\\.io\\//"
+			],
 			"minimumReleaseAge": null,
 			"addLabels": ["renovate-wait-3d"]
 		}

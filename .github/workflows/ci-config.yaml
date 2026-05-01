@@ -12,7 +12,6 @@ on:
       - '.github/workflows/ci-config.yaml'
       - '.github/workflows/renovate.yaml'
       - 'worker/**'
-      - 'README.md'
       - 'package.json'
 permissions:
   contents: read

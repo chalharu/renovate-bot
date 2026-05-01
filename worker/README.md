@@ -1,10 +1,7 @@
-# Renovate bot configuration
+# custom-stability-days Worker
 
-This repository contains the shared Renovate configuration. The Cloudflare
-Workers Rust webhook endpoint for the custom stability check lives under
-`worker/` so it stays separate from the repository's main Renovate config.
-
-## `custom-stability-days` Worker
+This directory contains the Cloudflare Workers Rust webhook endpoint for the
+custom Renovate stability check.
 
 The Worker accepts GitHub `pull_request` webhooks and creates a check run
 named `custom-stability-days` for Renovate PR branches. The PR branch comes
@@ -13,9 +10,10 @@ branches and unsupported pull request actions are acknowledged with `200 OK`
 without creating a check run.
 
 The shared Renovate config keeps the global `minimumReleaseAge` setting for
-datasources that support release timestamps. Docker-based updates such as
-`ghcr.io` are configured with `minimumReleaseAge: null` and receive the
-`renovate-wait-3d` label so this Worker enforces the waiting period instead.
+datasources that support release timestamps. Docker registry updates outside
+Docker Hub, such as `ghcr.io`, are configured with `minimumReleaseAge: null`
+and receive the `renovate-wait-3d` label so this Worker enforces the waiting
+period instead.
 
 Supported pull request actions:
 
@@ -55,10 +53,9 @@ write checks for repositories that receive the webhook.
 
 ### Local validation
 
-Run the Rust checks from the Worker directory:
+Run the Rust checks from this directory:
 
 ```sh
-cd worker
 cargo fmt --check
 cargo check
 cargo test
@@ -67,7 +64,6 @@ cargo test
 To validate the Worker target and release build:
 
 ```sh
-cd worker
 rustup target add wasm32-unknown-unknown
 cargo check --target wasm32-unknown-unknown
 cargo install worker-build --locked
@@ -80,7 +76,6 @@ Do not store secrets in `wrangler.toml`. Configure secrets with Wrangler before
 deploying:
 
 ```sh
-cd worker
 wrangler secret put GITHUB_APP_CLIENT_ID
 wrangler secret put GITHUB_APP_PRIVATE_KEY
 wrangler secret put GITHUB_APP_WEBHOOK_SECRET
