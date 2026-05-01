@@ -69,7 +69,11 @@ jobs:
             worker/target
           key: >-
             worker-cargo-chef-${{ runner.os }}-${{
-            hashFiles('worker/Cargo.lock', 'worker/Cargo.toml') }}
+            hashFiles(
+            'worker/Cargo.lock',
+            'worker/Cargo.toml',
+            'worker/rust-toolchain.toml'
+            ) }}
           restore-keys: |
             worker-cargo-chef-${{ runner.os }}-
       - name: Install Worker target
