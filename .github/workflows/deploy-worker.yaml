@@ -30,32 +30,18 @@ jobs:
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - name: Cache Worker cargo artifacts
-        # v4.2.4
-        uses: >-
-          actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            worker/target
-          key: >-
-            worker-deploy-cargo-chef-${{ runner.os }}-${{ hashFiles('worker/Cargo.lock', 'worker/Cargo.toml') }}
-          restore-keys: |
-            worker-deploy-cargo-chef-${{ runner.os }}-
       - name: Install Worker Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --target wasm32-unknown-unknown
       - name: Use Worker Rust toolchain
         run: rustup default 1.95.0
       - name: Install cargo-chef
-        run: cargo install cargo-chef --locked
+        run: cargo +1.95.0 install cargo-chef --locked
       - name: Prepare cargo-chef recipe
         working-directory: worker
-        run: cargo chef prepare --recipe-path recipe.json
+        run: cargo +1.95.0 chef prepare --recipe-path recipe.json
       - name: Cook wasm dependencies with cargo-chef
         working-directory: worker
-        run: cargo chef cook --recipe-path recipe.json --target wasm32-unknown-unknown --release
+        run: cargo +1.95.0 chef cook --recipe-path recipe.json --target wasm32-unknown-unknown --release
       - name: Deploy Worker
         id: deploy
         # v3.15.0
