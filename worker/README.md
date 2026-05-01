@@ -31,10 +31,9 @@ workflow:
    check for the current Renovate head SHA.
 2. The follow-up GitHub Actions step scans open `renovate/*` PRs, reads the
    Renovate JSON log output for the current run to recover branch/update
-   metadata, falls back to the Renovate PR body/title only when the log does not
-   contain a usable `releaseTimestamp`, generates an HS256 JWT using the GitHub
-   App private key material as the shared secret, and moves the custom check to
-   `in_progress` or `completed`.
+   metadata, generates an HS256 JWT using the GitHub App private key material as
+   the shared secret, and moves the custom check to `in_progress` or
+   `completed`.
 3. Later `labeled`/`unlabeled` events let the Worker fetch the current labels,
    read the hidden JWT marker from the current custom check output, and
    recalculate pending vs success from the stored `version_created_at`.
@@ -57,9 +56,13 @@ The hidden JWT marker is stored in the custom check `output.text` field as an
 HTML comment so the Worker can retrieve it later via the GitHub Checks API. The
 Renovate workflow writes a trace-level JSON log file with a `logContext` for the
 selected repository so the follow-up step can prefer Renovate's own resolved
-`releaseTimestamp` data. If metadata still cannot be resolved unambiguously, the
-check stays or returns to `queued` with an explanatory summary instead of
-inventing a timestamp.
+`releaseTimestamp` data. If metadata is unavailable in those logs, the check
+stays or returns to `queued` with an explanatory summary instead of inventing a
+timestamp. When a single Renovate branch contains multiple upgrades, the helper
+uses the most recent logged `releaseTimestamp` so the wait does not clear before
+the youngest included release is old enough. Common queued causes are an unreadable
+or missing Renovate JSON log file, no `processBranch()` entry for this branch in
+the current Renovate run, or a mismatched `RENOVATE_LOG_CONTEXT`.
 
 ## Configuration
 

@@ -54,6 +54,22 @@ const readRenovateJsonLogs = ({ logFile } = {}) => {
 	}
 };
 
+const fetchLabelNames = async ({ github, owner, repo, issueNumber } = {}) => {
+	const labelsResponse = await github.request(
+		"GET /repos/{owner}/{repo}/issues/{issue_number}/labels",
+		{
+			owner,
+			repo,
+			issue_number: issueNumber,
+			per_page: 100,
+			headers: {
+				accept: "application/vnd.github+json",
+			},
+		},
+	);
+	return labelsResponse.data.map((label) => label.name);
+};
+
 const encodeBase64Url = (value) =>
 	Buffer.from(
 		typeof value === "string" ? value : JSON.stringify(value),
@@ -195,16 +211,7 @@ const evaluateStability = ({
 	defaultWaitDays = 3,
 	versionCreatedAt,
 	now = new Date(),
-	hasBuiltInCheck = false,
 } = {}) => {
-	if (hasBuiltInCheck) {
-		return {
-			state: "success",
-			waitDays: 0,
-			elapsedDays: 0,
-		};
-	}
-
 	const waitDays = waitDaysForLabels({ labels, defaultWaitDays });
 	const elapsedDays = elapsedDaysFloor({ versionCreatedAt, now });
 	return {
@@ -261,108 +268,44 @@ const buildEvaluationPlan = ({
 	text: formatStateTokenMarker(token),
 });
 
-const buildCreateCheckPayload = ({ plan } = {}) => {
-	const output = {
-		title:
-			plan.state === "queue"
-				? "Waiting for release metadata"
-				: plan.state === "pending"
-					? "Stability waiting period"
-					: "Stability waiting period passed",
-		summary: plan.summary,
-		text: plan.text,
-	};
+const buildCheckOutput = ({ plan } = {}) => ({
+	title:
+		plan.state === "queue"
+			? "Waiting for release metadata"
+			: plan.state === "pending"
+				? "Stability waiting period"
+				: "Stability waiting period passed",
+	summary: plan.summary,
+	text: plan.text,
+});
 
-	return plan.state === "success"
+const buildCreateCheckPayload = ({ plan } = {}) =>
+	plan.state === "success"
 		? {
 				name: CUSTOM_CHECK_NAME,
 				head_sha: plan.headSha,
 				status: "completed",
 				conclusion: "success",
-				output,
+				output: buildCheckOutput({ plan }),
 			}
 		: {
 				name: CUSTOM_CHECK_NAME,
 				head_sha: plan.headSha,
 				status: plan.state === "queue" ? "queued" : "in_progress",
-				output,
+				output: buildCheckOutput({ plan }),
 			};
-};
 
-const buildUpdateCheckPayload = ({ plan } = {}) => {
-	const createPayload = buildCreateCheckPayload({ plan });
-	delete createPayload.name;
-	delete createPayload.head_sha;
-	return createPayload;
-};
-
-const extractRenovateVersion = (title = "") => {
-	const match = String(title)
-		.trim()
-		.match(/\bto\s+([^\s)]+)\s*$/i);
-	return match ? match[1] : null;
-};
-
-const decodeReleaseTag = (tag) =>
-	decodeURIComponent(String(tag).replace(/\+/g, "%20"));
-
-const extractGitHubReleaseLinks = (body = "") => {
-	const matches = String(body).matchAll(
-		/https:\/\/github\.com\/([^/\s)]+)\/([^/\s)]+)\/releases\/tag\/([^\s)#]+)/g,
-	);
-
-	return [
-		...new Map(
-			[...matches].map((match) => {
-				const owner = match[1];
-				const repo = match[2];
-				const tag = decodeReleaseTag(match[3]);
-				const htmlUrl = `https://github.com/${owner}/${repo}/releases/tag/${encodeURIComponent(
-					tag,
-				).replace(/%2F/g, "/")}`;
-
-				return [`${owner}/${repo}#${tag}`, { owner, repo, tag, htmlUrl }];
-			}),
-		).values(),
-	];
-};
-
-const normalizeVersion = (value) =>
-	typeof value === "string" ? value.replace(/^v/i, "").trim() : "";
-
-const selectReleaseLink = ({ title, body } = {}) => {
-	const links = extractGitHubReleaseLinks(body);
-	if (links.length === 0) {
-		return {
-			ok: false,
-			reason: "No GitHub release link was found in the Renovate PR body.",
-		};
-	}
-
-	const version = extractRenovateVersion(title);
-	if (!version && links.length === 1) {
-		return { ok: true, release: links[0] };
-	}
-
-	const matchingLinks = links.filter(
-		(link) =>
-			normalizeVersion(link.tag) === normalizeVersion(version) ||
-			normalizeVersion(link.tag).endsWith(normalizeVersion(version)),
-	);
-	if (matchingLinks.length === 1) {
-		return { ok: true, release: matchingLinks[0] };
-	}
-
-	if (links.length === 1) {
-		return { ok: true, release: links[0] };
-	}
-
-	return {
-		ok: false,
-		reason:
-			"Unable to resolve release metadata unambiguously from the Renovate PR body and title.",
-	};
-};
+const buildUpdateCheckPayload = ({ plan } = {}) =>
+	plan.state === "success"
+		? {
+				status: "completed",
+				conclusion: "success",
+				output: buildCheckOutput({ plan }),
+			}
+		: {
+				status: plan.state === "queue" ? "queued" : "in_progress",
+				output: buildCheckOutput({ plan }),
+			};
 
 const collectLoggedBranchUpdates = ({
 	logEntries = [],
@@ -375,7 +318,7 @@ const collectLoggedBranchUpdates = ({
 	}
 
 	return [
-		...new Map(
+		...new Set(
 			(Array.isArray(logEntries) ? logEntries : [])
 				.filter(
 					(entry) =>
@@ -389,27 +332,12 @@ const collectLoggedBranchUpdates = ({
 					(upgrade) =>
 						typeof upgrade?.releaseTimestamp === "string" &&
 						upgrade.releaseTimestamp.trim().length > 0 &&
+						!Number.isNaN(new Date(upgrade.releaseTimestamp).getTime()) &&
 						(typeof upgrade?.newVersion === "string" ||
 							typeof upgrade?.newValue === "string"),
 				)
-				.map((upgrade) => {
-					const target = upgrade.packageName ?? upgrade.depName ?? null;
-					const version = upgrade.newVersion ?? upgrade.newValue ?? null;
-
-					return [
-						[
-							String(target ?? ""),
-							String(version ?? ""),
-							String(upgrade.releaseTimestamp),
-						].join("\u0000"),
-						{
-							target,
-							version,
-							versionCreatedAt: upgrade.releaseTimestamp,
-						},
-					];
-				}),
-		).values(),
+				.map((upgrade) => upgrade.releaseTimestamp),
+		),
 	];
 };
 
@@ -432,85 +360,12 @@ const selectLoggedBranchUpdate = ({
 		};
 	}
 
-	if (updates.length > 1) {
-		return {
-			ok: false,
-			reason:
-				"Renovate JSON logs reported multiple releaseTimestamp candidates for this branch.",
-		};
-	}
-
 	return {
 		ok: true,
-		...updates[0],
+		versionCreatedAt: [...updates].sort(
+			(left, right) => new Date(right).getTime() - new Date(left).getTime(),
+		)[0],
 	};
-};
-
-const resolveVersionCreatedAt = async ({
-	github,
-	pullRequest,
-	renovateLogEntries = [],
-	expectedLogContext,
-} = {}) => {
-	const loggedUpdate = selectLoggedBranchUpdate({
-		logEntries: renovateLogEntries,
-		branchName: pullRequest?.head?.ref,
-		expectedLogContext,
-	});
-	if (loggedUpdate.ok) {
-		return {
-			ok: true,
-			versionCreatedAt: loggedUpdate.versionCreatedAt,
-			target: loggedUpdate.target,
-			version: loggedUpdate.version,
-			source: "renovate-log",
-		};
-	}
-
-	const selectedRelease = selectReleaseLink({
-		title: pullRequest?.title,
-		body: pullRequest?.body,
-	});
-	if (!selectedRelease.ok) {
-		return selectedRelease;
-	}
-
-	try {
-		const response = await github.request(
-			"GET /repos/{owner}/{repo}/releases/tags/{tag}",
-			{
-				owner: selectedRelease.release.owner,
-				repo: selectedRelease.release.repo,
-				tag: selectedRelease.release.tag,
-				headers: {
-					accept: "application/vnd.github+json",
-				},
-			},
-		);
-		const versionCreatedAt =
-			response?.data?.published_at ?? response?.data?.created_at ?? null;
-		if (!versionCreatedAt) {
-			return {
-				ok: false,
-				reason:
-					"The selected GitHub release does not expose published_at or created_at metadata.",
-			};
-		}
-
-		return {
-			ok: true,
-			versionCreatedAt,
-			target: null,
-			version: extractRenovateVersion(pullRequest?.title),
-			htmlUrl: selectedRelease.release.htmlUrl,
-			source: "release-link",
-		};
-	} catch (error) {
-		return {
-			ok: false,
-			reason: `${loggedUpdate.reason} Failed to fetch release metadata (status: ${error?.status ?? "unknown"}).`,
-		};
-	}
 };
 
 const findLatestCheckRun = ({ checkRuns = [], name } = {}) =>
@@ -629,43 +484,42 @@ const processPullRequest = async ({
 	expectedLogContext,
 	defaultWaitDays = 3,
 	now = new Date(),
+	logger = { warn() {} },
 } = {}) => {
-	const [labelsResponse, checkRuns] = await Promise.all([
-		github.request("GET /repos/{owner}/{repo}/issues/{issue_number}/labels", {
+	let labelsPromise;
+	const loadLabelNames = () => {
+		labelsPromise ??= fetchLabelNames({
+			github,
 			owner,
 			repo,
-			issue_number: pullRequest.number,
-			per_page: 100,
-			headers: {
-				accept: "application/vnd.github+json",
-			},
-		}),
-		(async () => {
-			const results = [];
-			for (let page = 1; ; page += 1) {
-				const { data } = await github.request(
-					"GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
-					{
-						owner,
-						repo,
-						ref: pullRequest.head.sha,
-						per_page: 100,
-						page,
-						headers: {
-							accept: "application/vnd.github+json",
-						},
+			issueNumber: pullRequest.number,
+		});
+		return labelsPromise;
+	};
+	const checkRuns = await (async () => {
+		const results = [];
+		for (let page = 1; ; page += 1) {
+			const { data } = await github.request(
+				"GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+				{
+					owner,
+					repo,
+					ref: pullRequest.head.sha,
+					per_page: 100,
+					page,
+					headers: {
+						accept: "application/vnd.github+json",
 					},
-				);
-				const pageCheckRuns = data?.check_runs ?? [];
-				results.push(...pageCheckRuns);
-				if (pageCheckRuns.length < 100) {
-					break;
-				}
+				},
+			);
+			const pageCheckRuns = data?.check_runs ?? [];
+			results.push(...pageCheckRuns);
+			if (pageCheckRuns.length < 100) {
+				break;
 			}
-			return results;
-		})(),
-	]);
-	const labelNames = labelsResponse.data.map((label) => label.name);
+		}
+		return results;
+	})();
 	const customCheckRun = findLatestCheckRun({
 		checkRuns,
 		name: CUSTOM_CHECK_NAME,
@@ -692,22 +546,28 @@ const processPullRequest = async ({
 					prNumber: pullRequest.number,
 					headSha: pullRequest.head.sha,
 				});
-			} catch {
+				loadLabelNames();
+			} catch (error) {
+				logger.warn?.(
+					`Ignoring reusable pending state for Renovate PR #${pullRequest.number}: ${error?.message ?? error}`,
+				);
 				pendingState = null;
 			}
 		}
 
 		if (!pendingState) {
-			const resolvedMetadata = await resolveVersionCreatedAt({
-				github,
-				pullRequest,
-				renovateLogEntries,
+			const loggedUpdate = selectLoggedBranchUpdate({
+				logEntries: renovateLogEntries,
+				branchName: pullRequest?.head?.ref,
 				expectedLogContext,
 			});
-			if (!resolvedMetadata.ok) {
+			if (!loggedUpdate.ok) {
+				logger.warn?.(
+					`Keeping Renovate PR #${pullRequest.number} queued: ${loggedUpdate.reason}`,
+				);
 				plan = buildQueuePlan({
 					pullRequest,
-					summary: resolvedMetadata.reason,
+					summary: loggedUpdate.reason,
 				});
 			} else {
 				pendingState = {
@@ -716,15 +576,17 @@ const processPullRequest = async ({
 						repositoryFullName: `${owner}/${repo}`,
 						prNumber: pullRequest.number,
 						headSha: pullRequest.head.sha,
-						versionCreatedAt: resolvedMetadata.versionCreatedAt,
+						versionCreatedAt: loggedUpdate.versionCreatedAt,
 						now,
 					}),
-					versionCreatedAt: resolvedMetadata.versionCreatedAt,
+					versionCreatedAt: loggedUpdate.versionCreatedAt,
 				};
+				loadLabelNames();
 			}
 		}
 
 		if (!plan) {
+			const labelNames = await loadLabelNames();
 			plan = buildEvaluationPlan({
 				pullRequest,
 				evaluation: evaluateStability({
@@ -764,13 +626,18 @@ const processRepositoryRenovatePullRequests = async ({
 	expectedLogContext,
 	defaultWaitDays = 3,
 	now = new Date(),
-	logger = { info() {} },
+	logger = { info() {}, warn() {} },
 } = {}) => {
+	const effectiveLogger = {
+		info() {},
+		warn() {},
+		...logger,
+	};
 	const renovateLogEntries = readRenovateJsonLogs({
 		logFile: renovateLogFile,
 	});
 	if (renovateLogEntries.length > 0) {
-		logger.info(
+		effectiveLogger.info(
 			`Loaded ${renovateLogEntries.length} Renovate JSON log entr${renovateLogEntries.length === 1 ? "y" : "ies"} from ${renovateLogFile}.`,
 		);
 	}
@@ -800,8 +667,9 @@ const processRepositoryRenovatePullRequests = async ({
 			expectedLogContext,
 			defaultWaitDays,
 			now,
+			logger: effectiveLogger,
 		});
-		logger.info(
+		effectiveLogger.info(
 			`Processed Renovate PR #${result.number}: ${result.state} (${result.action}). ${result.summary}`,
 		);
 		results.push(result);
@@ -816,6 +684,7 @@ module.exports = {
 	CUSTOM_CHECK_NAME,
 	INITIAL_QUEUE_SUMMARY,
 	applyCheckPlan,
+	buildCheckOutput,
 	buildCreateCheckPayload,
 	buildEvaluationPlan,
 	buildBuiltInPendingPlan,
@@ -826,11 +695,10 @@ module.exports = {
 	decodePendingStateToken,
 	elapsedDaysFloor,
 	evaluateStability,
-	extractGitHubReleaseLinks,
-	extractRenovateVersion,
 	extractStateTokenMarker,
 	extractReusablePendingState,
 	findLatestCheckRun,
+	fetchLabelNames,
 	formatStateTokenMarker,
 	normalizeSharedSecret,
 	parseRenovateJsonLogs,
@@ -838,8 +706,6 @@ module.exports = {
 	processPullRequest,
 	processRepositoryRenovatePullRequests,
 	readRenovateJsonLogs,
-	resolveVersionCreatedAt,
-	selectReleaseLink,
 	selectLoggedBranchUpdate,
 	waitDaysForLabels,
 };
