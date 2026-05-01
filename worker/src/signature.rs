@@ -5,6 +5,12 @@ type HmacSha256 = Hmac<Sha256>;
 
 const GITHUB_SHA256_PREFIX: &str = "sha256=";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureVerificationError {
+    MissingSecret,
+    InvalidSignature,
+}
+
 pub fn verify_github_signature(secret: &str, body: &[u8], signature_header: Option<&str>) -> bool {
     let Some(signature_header) = signature_header else {
         return false;
@@ -21,6 +27,21 @@ pub fn verify_github_signature(secret: &str, body: &[u8], signature_header: Opti
 
     mac.update(body);
     mac.verify_slice(&signature_bytes).is_ok()
+}
+
+pub fn verify_github_webhook(
+    secret: Option<&str>,
+    body: &[u8],
+    signature_header: Option<&str>,
+) -> Result<(), SignatureVerificationError> {
+    let Some(secret) = secret else {
+        return Err(SignatureVerificationError::MissingSecret);
+    };
+    if verify_github_signature(secret, body, signature_header) {
+        Ok(())
+    } else {
+        Err(SignatureVerificationError::InvalidSignature)
+    }
 }
 
 #[cfg(test)]
@@ -56,5 +77,23 @@ mod tests {
             b"payload",
             Some("sha256=not-hex")
         ));
+    }
+
+    #[test]
+    fn rejects_webhook_when_secret_is_missing() {
+        assert_eq!(
+            verify_github_webhook(None, b"payload", Some("sha256=abc")),
+            Err(SignatureVerificationError::MissingSecret)
+        );
+    }
+
+    #[test]
+    fn verifies_webhook_with_secret_and_valid_signature() {
+        let signature = "sha256=b82fcb791acec57859b989b430a826488ce2e479fdf92326bd0a2e8375a42ba4";
+
+        assert_eq!(
+            verify_github_webhook(Some("secret"), b"payload", Some(signature)),
+            Ok(())
+        );
     }
 }

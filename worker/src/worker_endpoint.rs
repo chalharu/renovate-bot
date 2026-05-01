@@ -3,7 +3,7 @@ use crate::decision::{
     parse_default_wait_days, sent_status,
 };
 use crate::github_app::create_github_app_jwt;
-use crate::signature::verify_github_signature;
+use crate::signature::{SignatureVerificationError, verify_github_webhook};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use worker::{
@@ -24,15 +24,6 @@ pub async fn fetch(
         return Response::error("method not allowed", 405);
     }
 
-    let event_header = request.headers().get("X-GitHub-Event")?;
-    if event_header.as_deref() != Some("pull_request") {
-        console_log!(
-            "Ignoring webhook event {:?}; only pull_request is supported.",
-            event_header
-        );
-        return Response::ok("OK");
-    }
-
     let signature_header = request.headers().get("X-Hub-Signature-256")?;
     let body = match request.bytes().await {
         Ok(body) => body,
@@ -42,15 +33,29 @@ pub async fn fetch(
         }
     };
 
-    if let Some(secret) = optional_binding(&env, "GITHUB_APP_WEBHOOK_SECRET") {
-        if !verify_github_signature(&secret, &body, signature_header.as_deref()) {
-            console_error!("Invalid or missing GitHub webhook signature; skipping processing.");
-            return Response::ok("OK");
+    match verify_github_webhook(
+        optional_binding(&env, "GITHUB_APP_WEBHOOK_SECRET").as_deref(),
+        &body,
+        signature_header.as_deref(),
+    ) {
+        Ok(()) => {}
+        Err(SignatureVerificationError::MissingSecret) => {
+            console_error!("GITHUB_APP_WEBHOOK_SECRET is not configured.");
+            return Response::error("server misconfigured", 500);
         }
-    } else {
+        Err(SignatureVerificationError::InvalidSignature) => {
+            console_error!("Invalid or missing GitHub webhook signature.");
+            return Response::error("invalid webhook signature", 401);
+        }
+    }
+
+    let event_header = request.headers().get("X-GitHub-Event")?;
+    if event_header.as_deref() != Some("pull_request") {
         console_log!(
-            "GITHUB_APP_WEBHOOK_SECRET is not configured; webhook signature verification skipped."
+            "Ignoring webhook event {:?}; only pull_request is supported.",
+            event_header
         );
+        return Response::ok("OK");
     }
 
     let default_wait = parse_default_wait_days(optional_var(&env, "DEFAULT_WAIT_DAYS").as_deref());

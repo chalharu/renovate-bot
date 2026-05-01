@@ -1,0 +1,51 @@
+name: Deploy Worker
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/deploy-worker.yaml'
+      - 'worker/Cargo.lock'
+      - 'worker/Cargo.toml'
+      - 'worker/src/**'
+      - 'worker/wrangler.toml'
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  deploy:
+    name: Deploy Cloudflare Worker
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Worker target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Deploy Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: worker
+          wranglerVersion: 4.87.0
+      - name: Verify deployed Worker rejects GET requests
+        env:
+          CLOUDFLARE_WORKER_URL: ${{ secrets.CLOUDFLARE_WORKER_URL }}
+        run: |
+          status_code="$(
+            curl --show-error --silent --output /dev/null --write-out '%{http_code}' \
+              "$CLOUDFLARE_WORKER_URL"
+          )"
+          if [ "$status_code" != '405' ]; then
+            echo "Expected GET $CLOUDFLARE_WORKER_URL to return 405, got $status_code" >&2
+            exit 1
+          fi

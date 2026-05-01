@@ -3,7 +3,7 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2025-01-01"
 
 [build]
-command = "cargo install -q worker-build && worker-build --release"
+command = "cargo install -q worker-build --locked && worker-build --release"
 
 [vars]
 DEFAULT_WAIT_DAYS = "3"

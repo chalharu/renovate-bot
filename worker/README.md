@@ -44,9 +44,8 @@ Wrangler variables/secrets:
   missing values safely fall back to `3`.
 - `GITHUB_APP_CLIENT_ID`: secret used as the GitHub App JWT issuer.
 - `GITHUB_APP_PRIVATE_KEY`: secret used to sign RS256 app JWTs.
-- `GITHUB_APP_WEBHOOK_SECRET`: optional webhook secret for
-  `X-Hub-Signature-256` verification. If absent, verification is skipped and
-  logged.
+- `GITHUB_APP_WEBHOOK_SECRET`: secret used for `X-Hub-Signature-256`
+  verification. Requests are rejected when it is missing or invalid.
 
 The GitHub App needs permission to read repository installation metadata and
 write checks for repositories that receive the webhook.
@@ -72,14 +71,18 @@ worker-build --release
 
 ## Deployment basics
 
-Do not store secrets in `wrangler.toml`. Configure secrets with Wrangler before
-deploying:
+Production deployments run from GitHub Actions on pushes to `main` via
+`.github/workflows/deploy-worker.yaml`. You can also run that workflow manually
+from `main` to redeploy the same Worker; the deploy job intentionally skips
+non-`main` refs so branch runs cannot overwrite production.
+
+Do not store secrets in `wrangler.toml`. Configure or rotate Worker secrets with
+Wrangler before the first deployment, and whenever those values change:
 
 ```sh
 wrangler secret put GITHUB_APP_CLIENT_ID
 wrangler secret put GITHUB_APP_PRIVATE_KEY
 wrangler secret put GITHUB_APP_WEBHOOK_SECRET
-wrangler deploy
 ```
 
 Configure the deployed Worker URL as a GitHub App webhook endpoint for

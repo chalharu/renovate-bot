@@ -3,6 +3,7 @@ rules:
     config:
       allow:
         - APP_CLIENT_ID
+        - CLOUDFLARE_API_TOKEN
         - PRIVATE_KEY
         - DOCKERHUB_USERNAME
         - DOCKERHUB_TOKEN
