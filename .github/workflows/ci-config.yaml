@@ -1,5 +1,6 @@
+---
 name: Renovate config CI
-on:
+'on':
   workflow_dispatch:
   pull_request:
     paths:
@@ -22,7 +23,9 @@ jobs:
   build:
     permissions:
       contents: read
-    uses: chalharu/workflows/.github/workflows/renovate-ci.yaml@80acd0f7698de276f45e09882e7e86b78ac23ce4 # main
+    # main
+    uses: >-
+      chalharu/workflows/.github/workflows/renovate-ci.yaml@80acd0f7698de276f45e09882e7e86b78ac23ce4
   workflow_helper_regression:
     name: Workflow helper regression
     runs-on: ubuntu-latest
@@ -31,7 +34,9 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        # v6.0.2
+        uses: >-
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Run repository workflow helper tests
@@ -47,11 +52,38 @@ jobs:
         working-directory: worker
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        # v6.0.2
+        uses: >-
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
+      - name: Cache Worker cargo artifacts
+        # v4.2.4
+        uses: >-
+          actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            worker/target
+          key: >-
+            worker-cargo-chef-${{ runner.os }}-${{
+            hashFiles('worker/Cargo.lock', 'worker/Cargo.toml') }}
+          restore-keys: |
+            worker-cargo-chef-${{ runner.os }}-
       - name: Install Worker target
         run: rustup target add wasm32-unknown-unknown
+      - name: Install cargo-chef
+        run: cargo install cargo-chef --locked
+      - name: Prepare cargo-chef recipe
+        run: cargo chef prepare --recipe-path recipe.json
+      - name: Cook host dependencies with cargo-chef
+        run: cargo chef cook --recipe-path recipe.json
+      - name: Cook wasm dependencies with cargo-chef
+        run: >-
+          cargo chef cook --recipe-path recipe.json
+          --target wasm32-unknown-unknown --release
       - name: Check Rust formatting
         run: cargo fmt --check
       - name: Check Rust Worker logic

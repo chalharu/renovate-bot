@@ -2,13 +2,17 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 pub const CHECK_NAME: &str = "custom-stability-days";
+pub const BUILTIN_CHECK_NAME: &str = "renovate/stability-days";
 pub const DEFAULT_WAIT_DAYS_FALLBACK: u32 = 3;
 
 const RENOVATE_BRANCH_PREFIX: &str = "renovate/";
 const SECURITY_LABEL: &str = "security";
 const WAIT_LABEL_PREFIX: &str = "renovate-wait-";
 const WAIT_LABEL_SUFFIX: &str = "d";
-const SUPPORTED_ACTIONS: [&str; 5] = ["opened", "reopened", "synchronize", "labeled", "unlabeled"];
+const STATE_TOKEN_MARKER_PREFIX: &str = "<!-- custom-stability-days-jwt:";
+const STATE_TOKEN_MARKER_SUFFIX: &str = " -->";
+const QUEUE_ACTIONS: [&str; 3] = ["opened", "reopened", "synchronize"];
+const REEVALUATE_ACTIONS: [&str; 2] = ["labeled", "unlabeled"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefaultWaitDays {
@@ -18,7 +22,8 @@ pub struct DefaultWaitDays {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    CreateCheck(CheckRunPlan),
+    Queue(CheckRunTarget),
+    Reevaluate(CheckRunTarget),
     Ignore(IgnoreReason),
 }
 
@@ -29,34 +34,47 @@ pub enum IgnoreReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckRunTarget {
+    pub repository_full_name: String,
+    pub pr_number: u64,
+    pub head_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckRunPlan {
     pub repository_full_name: String,
     pub pr_number: u64,
     pub head_sha: String,
-    pub wait_days: u32,
-    pub elapsed_days: u32,
-    pub status: CheckStatus,
+    pub state: CheckState,
+    pub wait_days: Option<u32>,
+    pub elapsed_days: Option<u32>,
+    pub summary: String,
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckStatus {
+pub enum CheckState {
+    Queue,
     Pending,
     Success,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitEvaluation {
+    pub wait_days: u32,
+    pub elapsed_days: u32,
+    pub state: CheckState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionError {
     InvalidJson(String),
-    InvalidCreatedAt(String),
 }
 
 impl std::fmt::Display for DecisionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidJson(error) => write!(formatter, "invalid pull_request payload: {error}"),
-            Self::InvalidCreatedAt(value) => {
-                write!(formatter, "invalid pull_request.created_at: {value}")
-            }
         }
     }
 }
@@ -78,10 +96,7 @@ struct Repository {
 #[derive(Debug, Deserialize)]
 struct PullRequest {
     number: u64,
-    created_at: String,
     head: Head,
-    #[serde(default)]
-    labels: Vec<Label>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,11 +104,6 @@ struct Head {
     #[serde(rename = "ref")]
     branch_ref: String,
     sha: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Label {
-    name: String,
 }
 
 pub fn parse_default_wait_days(raw_value: Option<&str>) -> DefaultWaitDays {
@@ -109,19 +119,9 @@ pub fn parse_default_wait_days(raw_value: Option<&str>) -> DefaultWaitDays {
     }
 }
 
-pub fn decide_from_slice(
-    payload: &[u8],
-    now: DateTime<Utc>,
-    default_wait_days: u32,
-) -> Result<Decision, DecisionError> {
+pub fn decide_from_slice(payload: &[u8]) -> Result<Decision, DecisionError> {
     let event: PullRequestWebhook = serde_json::from_slice(payload)
         .map_err(|error| DecisionError::InvalidJson(error.to_string()))?;
-
-    if !SUPPORTED_ACTIONS.contains(&event.action.as_str()) {
-        return Ok(Decision::Ignore(IgnoreReason::UnsupportedAction(
-            event.action,
-        )));
-    }
 
     if !event
         .pull_request
@@ -134,32 +134,22 @@ pub fn decide_from_slice(
         )));
     }
 
-    let wait_days = wait_days_for_labels(
-        event
-            .pull_request
-            .labels
-            .iter()
-            .map(|label| label.name.as_str()),
-        default_wait_days,
-    );
-    let created_at = DateTime::parse_from_rfc3339(&event.pull_request.created_at)
-        .map_err(|_| DecisionError::InvalidCreatedAt(event.pull_request.created_at.clone()))?
-        .with_timezone(&Utc);
-    let elapsed_days = elapsed_days_floor(created_at, now);
-    let status = if elapsed_days < wait_days {
-        CheckStatus::Pending
-    } else {
-        CheckStatus::Success
-    };
-
-    Ok(Decision::CreateCheck(CheckRunPlan {
+    let target = CheckRunTarget {
         repository_full_name: event.repository.full_name,
         pr_number: event.pull_request.number,
         head_sha: event.pull_request.head.sha,
-        wait_days,
-        elapsed_days,
-        status,
-    }))
+    };
+
+    if QUEUE_ACTIONS.contains(&event.action.as_str()) {
+        return Ok(Decision::Queue(target));
+    }
+    if REEVALUATE_ACTIONS.contains(&event.action.as_str()) {
+        return Ok(Decision::Reevaluate(target));
+    }
+
+    Ok(Decision::Ignore(IgnoreReason::UnsupportedAction(
+        event.action,
+    )))
 }
 
 pub fn wait_days_for_labels<'a>(
@@ -196,34 +186,181 @@ pub fn elapsed_days_floor(created_at: DateTime<Utc>, now: DateTime<Utc>) -> u32 
     (elapsed_seconds / 86_400) as u32
 }
 
+pub fn evaluate_wait_period<'a>(
+    labels: impl IntoIterator<Item = &'a str>,
+    default_wait_days: u32,
+    version_created_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> WaitEvaluation {
+    let wait_days = wait_days_for_labels(labels, default_wait_days);
+    let elapsed_days = elapsed_days_floor(version_created_at, now);
+    let state = if elapsed_days < wait_days {
+        CheckState::Pending
+    } else {
+        CheckState::Success
+    };
+
+    WaitEvaluation {
+        wait_days,
+        elapsed_days,
+        state,
+    }
+}
+
+pub fn queue_plan(target: &CheckRunTarget, summary: impl Into<String>) -> CheckRunPlan {
+    CheckRunPlan {
+        repository_full_name: target.repository_full_name.clone(),
+        pr_number: target.pr_number,
+        head_sha: target.head_sha.clone(),
+        state: CheckState::Queue,
+        wait_days: None,
+        elapsed_days: None,
+        summary: summary.into(),
+        text: None,
+    }
+}
+
+pub fn builtin_success_plan(target: &CheckRunTarget, summary: impl Into<String>) -> CheckRunPlan {
+    CheckRunPlan {
+        repository_full_name: target.repository_full_name.clone(),
+        pr_number: target.pr_number,
+        head_sha: target.head_sha.clone(),
+        state: CheckState::Success,
+        wait_days: Some(0),
+        elapsed_days: Some(0),
+        summary: summary.into(),
+        text: None,
+    }
+}
+
+pub fn evaluated_plan(
+    target: &CheckRunTarget,
+    evaluation: &WaitEvaluation,
+    version_created_at: DateTime<Utc>,
+    state_token: &str,
+) -> CheckRunPlan {
+    let version_created_at_text = format_utc_timestamp(version_created_at);
+    let summary = match evaluation.state {
+        CheckState::Pending => format!(
+            "Waiting {} full day(s) from release timestamp {}; {} day(s) elapsed.",
+            evaluation.wait_days, version_created_at_text, evaluation.elapsed_days
+        ),
+        CheckState::Success => {
+            if evaluation.wait_days == 0 {
+                format!(
+                    "Current labels allow this Renovate PR to pass immediately (release timestamp {}).",
+                    version_created_at_text
+                )
+            } else {
+                format!(
+                    "Required wait of {} full day(s) from release timestamp {} has passed ({} day(s) elapsed).",
+                    evaluation.wait_days, version_created_at_text, evaluation.elapsed_days
+                )
+            }
+        }
+        CheckState::Queue => unreachable!("queue plans are constructed separately"),
+    };
+
+    CheckRunPlan {
+        repository_full_name: target.repository_full_name.clone(),
+        pr_number: target.pr_number,
+        head_sha: target.head_sha.clone(),
+        state: evaluation.state,
+        wait_days: Some(evaluation.wait_days),
+        elapsed_days: Some(evaluation.elapsed_days),
+        summary,
+        text: Some(format_state_token_marker(state_token)),
+    }
+}
+
+pub fn format_state_token_marker(state_token: &str) -> String {
+    format!("{STATE_TOKEN_MARKER_PREFIX}{state_token}{STATE_TOKEN_MARKER_SUFFIX}")
+}
+
+fn format_utc_timestamp(value: DateTime<Utc>) -> String {
+    serde_json::to_string(&value)
+        .expect("DateTime<Utc> should serialize to a JSON string")
+        .trim_matches('"')
+        .to_string()
+}
+
+pub fn extract_state_token_marker(text: &str) -> Option<String> {
+    let start_index = text.find(STATE_TOKEN_MARKER_PREFIX)? + STATE_TOKEN_MARKER_PREFIX.len();
+    let end_index = text[start_index..].find(STATE_TOKEN_MARKER_SUFFIX)? + start_index;
+    Some(text[start_index..end_index].to_string())
+}
+
 pub fn check_run_body(plan: &CheckRunPlan) -> serde_json::Value {
-    match plan.status {
-        CheckStatus::Pending => serde_json::json!({
+    match plan.state {
+        CheckState::Queue => serde_json::json!({
+            "name": CHECK_NAME,
+            "head_sha": plan.head_sha,
+            "status": "queued",
+            "output": {
+                "title": "Waiting for release metadata",
+                "summary": plan.summary,
+                "text": plan.text
+            }
+        }),
+        CheckState::Pending => serde_json::json!({
             "name": CHECK_NAME,
             "head_sha": plan.head_sha,
             "status": "in_progress",
             "output": {
                 "title": "Stability waiting period",
-                "summary": "This Renovate PR is in a waiting period before it can be merged."
+                "summary": plan.summary,
+                "text": plan.text
             }
         }),
-        CheckStatus::Success => serde_json::json!({
+        CheckState::Success => serde_json::json!({
             "name": CHECK_NAME,
             "head_sha": plan.head_sha,
             "status": "completed",
             "conclusion": "success",
             "output": {
                 "title": "Stability waiting period passed",
-                "summary": "The waiting period for this Renovate PR has passed."
+                "summary": plan.summary,
+                "text": plan.text
             }
         }),
     }
 }
 
-pub fn sent_status(status: CheckStatus) -> &'static str {
-    match status {
-        CheckStatus::Pending => "in_progress",
-        CheckStatus::Success => "completed/success",
+pub fn check_run_update_body(plan: &CheckRunPlan) -> serde_json::Value {
+    match plan.state {
+        CheckState::Queue => serde_json::json!({
+            "status": "queued",
+            "output": {
+                "title": "Waiting for release metadata",
+                "summary": plan.summary,
+                "text": plan.text
+            }
+        }),
+        CheckState::Pending => serde_json::json!({
+            "status": "in_progress",
+            "output": {
+                "title": "Stability waiting period",
+                "summary": plan.summary,
+                "text": plan.text
+            }
+        }),
+        CheckState::Success => serde_json::json!({
+            "status": "completed",
+            "conclusion": "success",
+            "output": {
+                "title": "Stability waiting period passed",
+                "summary": plan.summary,
+                "text": plan.text
+            }
+        }),
+    }
+}
+
+pub fn sent_status(state: CheckState) -> &'static str {
+    match state {
+        CheckState::Queue => "queued",
+        CheckState::Pending => "in_progress",
+        CheckState::Success => "completed/success",
     }
 }
 
@@ -236,50 +373,61 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 4, 30, 12, 0, 0).unwrap()
     }
 
-    fn payload(action: &str, branch: &str, created_at: &str, labels: &[&str]) -> Vec<u8> {
-        let labels = labels
-            .iter()
-            .map(|label| serde_json::json!({ "name": label }))
-            .collect::<Vec<_>>();
-
+    fn payload(action: &str, branch: &str) -> Vec<u8> {
         serde_json::json!({
             "action": action,
             "repository": { "full_name": "owner/repo" },
             "pull_request": {
                 "number": 42,
-                "created_at": created_at,
                 "head": {
                     "ref": branch,
                     "sha": "abc123"
-                },
-                "labels": labels
+                }
             }
         })
         .to_string()
         .into_bytes()
     }
 
-    fn plan_for(labels: &[&str], created_at: &str, default_wait_days: u32) -> CheckRunPlan {
-        match decide_from_slice(
-            &payload("opened", "renovate/example", created_at, labels),
-            now(),
-            default_wait_days,
-        )
-        .unwrap()
-        {
-            Decision::CreateCheck(plan) => plan,
-            Decision::Ignore(reason) => panic!("expected check plan, ignored: {reason:?}"),
+    fn target() -> CheckRunTarget {
+        CheckRunTarget {
+            repository_full_name: "owner/repo".to_string(),
+            pr_number: 42,
+            head_sha: "abc123".to_string(),
         }
     }
 
     #[test]
+    fn queues_supported_open_actions_for_renovate_branches() {
+        assert_eq!(
+            decide_from_slice(&payload("opened", "renovate/example")).unwrap(),
+            Decision::Queue(target())
+        );
+        assert_eq!(
+            decide_from_slice(&payload("reopened", "renovate/example")).unwrap(),
+            Decision::Queue(target())
+        );
+        assert_eq!(
+            decide_from_slice(&payload("synchronize", "renovate/example")).unwrap(),
+            Decision::Queue(target())
+        );
+    }
+
+    #[test]
+    fn reevaluates_label_actions_for_renovate_branches() {
+        assert_eq!(
+            decide_from_slice(&payload("labeled", "renovate/example")).unwrap(),
+            Decision::Reevaluate(target())
+        );
+        assert_eq!(
+            decide_from_slice(&payload("unlabeled", "renovate/example")).unwrap(),
+            Decision::Reevaluate(target())
+        );
+    }
+
+    #[test]
     fn ignores_non_renovate_branch() {
-        let decision = decide_from_slice(
-            &payload("opened", "feature/example", "2026-04-28T12:00:00Z", &[]),
-            now(),
-            3,
-        )
-        .unwrap();
+        let decision = decide_from_slice(&payload("opened", "feature/example")).unwrap();
 
         assert_eq!(
             decision,
@@ -291,12 +439,7 @@ mod tests {
 
     #[test]
     fn ignores_unsupported_action() {
-        let decision = decide_from_slice(
-            &payload("closed", "renovate/example", "2026-04-28T12:00:00Z", &[]),
-            now(),
-            3,
-        )
-        .unwrap();
+        let decision = decide_from_slice(&payload("closed", "renovate/example")).unwrap();
 
         assert_eq!(
             decision,
@@ -306,14 +449,15 @@ mod tests {
 
     #[test]
     fn security_label_overrides_wait_label() {
-        let plan = plan_for(
-            &["renovate-wait-10d", "security"],
-            "2026-04-30T12:00:00Z",
+        let evaluation = evaluate_wait_period(
+            ["renovate-wait-10d", "security"],
             3,
+            Utc.with_ymd_and_hms(2026, 4, 30, 12, 0, 0).unwrap(),
+            now(),
         );
 
-        assert_eq!(plan.wait_days, 0);
-        assert_eq!(plan.status, CheckStatus::Success);
+        assert_eq!(evaluation.wait_days, 0);
+        assert_eq!(evaluation.state, CheckState::Success);
     }
 
     #[test]
@@ -325,14 +469,6 @@ mod tests {
             wait_days_for_labels(["renovate-wait-0d", "renovate-wait-5d"], 3),
             5
         );
-    }
-
-    #[test]
-    fn default_wait_days_applies_when_no_label_matches() {
-        let plan = plan_for(&["renovate"], "2026-04-28T12:00:00Z", 4);
-
-        assert_eq!(plan.wait_days, 4);
-        assert_eq!(plan.status, CheckStatus::Pending);
     }
 
     #[test]
@@ -383,49 +519,74 @@ mod tests {
     }
 
     #[test]
-    fn pending_and_success_boundaries() {
-        let pending = plan_for(&["renovate-wait-3d"], "2026-04-27T12:00:01Z", 1);
-        let success = plan_for(&["renovate-wait-3d"], "2026-04-27T12:00:00Z", 1);
+    fn pending_and_success_boundaries_use_version_created_at() {
+        let pending = evaluate_wait_period(
+            ["renovate-wait-3d"],
+            1,
+            Utc.with_ymd_and_hms(2026, 4, 27, 12, 0, 1).unwrap(),
+            now(),
+        );
+        let success = evaluate_wait_period(
+            ["renovate-wait-3d"],
+            1,
+            Utc.with_ymd_and_hms(2026, 4, 27, 12, 0, 0).unwrap(),
+            now(),
+        );
 
         assert_eq!(pending.elapsed_days, 2);
-        assert_eq!(pending.status, CheckStatus::Pending);
+        assert_eq!(pending.state, CheckState::Pending);
         assert_eq!(success.elapsed_days, 3);
-        assert_eq!(success.status, CheckStatus::Success);
+        assert_eq!(success.state, CheckState::Success);
     }
 
     #[test]
     fn malformed_payload_is_reported_without_panic() {
-        let error = decide_from_slice(br#"{"action":"opened"}"#, now(), 3).unwrap_err();
+        let error = decide_from_slice(br#"{"action":"opened"}"#).unwrap_err();
 
         assert!(matches!(error, DecisionError::InvalidJson(_)));
     }
 
     #[test]
-    fn invalid_created_at_is_reported_without_panic() {
-        let error = decide_from_slice(
-            &payload("opened", "renovate/example", "not-a-date", &[]),
-            now(),
-            3,
-        )
-        .unwrap_err();
+    fn state_token_markers_round_trip() {
+        let marker = format_state_token_marker("token-value");
 
         assert_eq!(
-            error,
-            DecisionError::InvalidCreatedAt("not-a-date".to_string())
+            extract_state_token_marker(&format!("visible text {marker} trailing text")),
+            Some("token-value".to_string())
         );
     }
 
     #[test]
     fn check_run_bodies_match_expected_api_shape() {
-        let pending = plan_for(&["renovate-wait-3d"], "2026-04-28T12:00:00Z", 1);
-        let success = plan_for(&["security"], "2026-04-30T12:00:00Z", 3);
+        let queue = queue_plan(
+            &target(),
+            "Waiting for the Renovate follow-up workflow to resolve release metadata.",
+        );
+        let evaluation = evaluate_wait_period(
+            ["renovate-wait-3d"],
+            1,
+            Utc.with_ymd_and_hms(2026, 4, 28, 12, 0, 0).unwrap(),
+            now(),
+        );
+        let pending = evaluated_plan(
+            &target(),
+            &evaluation,
+            Utc.with_ymd_and_hms(2026, 4, 28, 12, 0, 0).unwrap(),
+            "token",
+        );
+        let success = builtin_success_plan(
+            &target(),
+            "Renovate's built-in stability-days check exists on this commit.",
+        );
 
+        assert_eq!(check_run_body(&queue)["status"], "queued");
         assert_eq!(check_run_body(&pending)["status"], "in_progress");
         assert_eq!(
-            check_run_body(&pending)["output"]["title"],
-            "Stability waiting period"
+            check_run_body(&pending)["output"]["text"],
+            "<!-- custom-stability-days-jwt:token -->"
         );
         assert_eq!(check_run_body(&success)["status"], "completed");
         assert_eq!(check_run_body(&success)["conclusion"], "success");
+        assert_eq!(check_run_update_body(&success)["conclusion"], "success");
     }
 }
