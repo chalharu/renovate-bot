@@ -17,16 +17,12 @@ jobs:
       selection_map: ${{ steps.list_repositories.outputs.selection_map }}
     steps:
       - name: Checkout repository
-        # v6.0.2
-        uses: >-
-          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Get token
         id: get_token
-        # v3.1.1
-        uses: >-
-          actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
@@ -34,9 +30,7 @@ jobs:
           permission-contents: read
       - name: List accessible repositories
         id: list_repositories
-        # v9.0.0
-        uses: >-
-          actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ steps.get_token.outputs.token }}
           script: |
@@ -111,16 +105,12 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        # v6.0.2
-        uses: >-
-          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Get repository list token
         id: get_repository_list_token
-        # v3.1.1
-        uses: >-
-          actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
@@ -128,9 +118,7 @@ jobs:
           permission-contents: read
       - name: Resolve repository details
         id: resolve_repository
-        # v9.0.0
-        uses: >-
-          actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           REPOSITORY: ${{ matrix.repository }}
           REPOSITORY_INDEX: ${{ matrix.repository_index }}
@@ -196,9 +184,7 @@ jobs:
             core.setOutput("log_level", logLevel);
       - name: Get token
         id: get_token
-        # v3.1.1
-        uses: >-
-          actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
@@ -214,9 +200,7 @@ jobs:
           permission-statuses: write
           permission-workflows: write
       - name: Probe Dependabot alert access
-        # v9.0.0
-        uses: >-
-          actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ steps.get_token.outputs.token }}
           script: |
@@ -277,9 +261,7 @@ jobs:
           REPOSITORY_OWNER: ${{ steps.resolve_repository.outputs.owner }}
           REPOSITORY_PRIVATE: ${{ steps.resolve_repository.outputs.private }}
       - name: Self-hosted Renovate
-        # v46.1.11
-        uses: >-
-          renovatebot/github-action@6a9df9227eeb83af9a5abef6890bbb0c9068f436
+        uses: renovatebot/github-action@f66d8679fcfcfa051abde6e7a623007173bf5164 # v46.1.12
         with:
           # Managed by Renovate via renovate.json customManagers.
           configurationFile: renovate.json
@@ -305,9 +287,7 @@ jobs:
       - name: Reconcile custom stability-days checks
         if: >-
           ${{ always() && steps.get_token.outcome == 'success' && steps.resolve_repository.outcome == 'success' }}
-        # v9.0.0
-        uses: >-
-          actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEFAULT_WAIT_DAYS: "3"
           RENOVATE_LOG_CONTEXT: >-
