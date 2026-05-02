@@ -221,15 +221,24 @@ describe("check run body shapes", () => {
 			TARGET,
 			"Renovate's built-in stability-days check exists on this commit.",
 		);
+		const queueBody = checkRunBody(queue);
+		const pendingBody = checkRunBody(pending);
+		const successBody = checkRunBody(success);
+		const successUpdateBody = checkRunUpdateBody(success);
 
-		assert.equal(checkRunBody(queue).status, "queued");
-		assert.equal(checkRunBody(pending).status, "in_progress");
+		assert.equal(queueBody.status, "queued");
+		assert.equal(pendingBody.status, "in_progress");
 		assert.equal(
-			(checkRunBody(pending).output as { text: string }).text,
+			(pendingBody.output as { text: string }).text,
 			"<!-- custom-stability-days-jwt:token -->",
 		);
-		assert.equal(checkRunBody(success).status, "completed");
-		assert.equal(checkRunBody(success).conclusion, "success");
-		assert.equal(checkRunUpdateBody(success).conclusion, "success");
+		assert.equal(successBody.status, "completed");
+		assert.equal(successBody.conclusion, "success");
+		assert.equal(successUpdateBody.conclusion, "success");
+		assert.ok(!("text" in (queueBody.output as Record<string, unknown>)));
+		assert.ok(!("text" in (successBody.output as Record<string, unknown>)));
+		assert.ok(
+			!("text" in (successUpdateBody.output as Record<string, unknown>)),
+		);
 	});
 });

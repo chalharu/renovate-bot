@@ -530,5 +530,5 @@ interface CheckRun {
 	name: string;
 	status: string;
 	conclusion: string | null;
-	output: { summary: string; text: string | null } | null;
+	output: { summary: string; text?: string | null } | null;
 }
