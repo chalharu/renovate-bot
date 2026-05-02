@@ -39,7 +39,12 @@ export async function verifyGithubSignature(
 		false,
 		["verify"],
 	);
-	return crypto.subtle.verify("HMAC", key, signatureBytes, body);
+	return crypto.subtle.verify(
+		"HMAC",
+		key,
+		Uint8Array.from(signatureBytes),
+		Uint8Array.from(body),
+	);
 }
 
 function hexToBytes(hex: string): Uint8Array {

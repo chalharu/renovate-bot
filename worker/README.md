@@ -1,20 +1,19 @@
 # custom-stability-days Worker
 
-This directory contains the Cloudflare Workers TypeScript webhook endpoint for
-the custom Renovate stability check.
+このディレクトリには、Renovate 用の独自 stability-days チェックを処理する
+Cloudflare Workers 向け TypeScript Worker が入っています。
 
-The Worker accepts GitHub `pull_request` webhooks for Renovate PR branches
-(`pull_request.head.ref` starts with `renovate/`) and manages a check run named
-`custom-stability-days`. Non-Renovate branches and unsupported pull request
-actions are acknowledged with `200 OK` without changing checks.
+この Worker は Renovate PR 向けの GitHub `pull_request` webhook
+（`pull_request.head.ref` が `renovate/` で始まるもの）を受け取り、
+`custom-stability-days` という check run を更新します。対象外のブランチや
+未対応アクションは、状態を変えずに `200 OK` で受け流します。
 
-The shared Renovate config keeps the global `minimumReleaseAge` setting for
-datasources that support release timestamps. Docker registry updates outside
-Docker Hub, such as `ghcr.io`, are configured with `minimumReleaseAge: null`
-and receive the `renovate-wait-3d` label so this Worker enforces the waiting
-period instead.
+共有 Renovate 設定では、リリース日時を扱える datasource には
+`minimumReleaseAge` を使います。一方で Docker Hub 以外の Docker registry
+（例: `ghcr.io`）は `minimumReleaseAge: null` にし、
+`renovate-wait-3d` ラベルを付けて、この Worker 側で待機期間を判定します。
 
-Supported pull request actions:
+## 対応している pull_request action
 
 - `opened`
 - `reopened`
@@ -22,90 +21,90 @@ Supported pull request actions:
 - `labeled`
 - `unlabeled`
 
-## Waiting-period rules
+## 判定フロー
 
-The flow is intentionally split between the Worker webhook and the Renovate
-workflow:
+責務は Worker と Renovate 後続 workflow で分離しています。
 
-1. `opened`, `reopened`, and `synchronize` create or refresh a `queued` custom
-   check for the current Renovate head SHA.
-2. The follow-up GitHub Actions step scans open `renovate/*` PRs, reads the
-   Renovate JSON log output for the current run to recover branch/update
-   metadata, generates an HS256 JWT using the GitHub App private key material as
-   the shared secret, and moves the custom check to `in_progress` or
-   `completed`.
-3. Later `labeled`/`unlabeled` events let the Worker fetch the current labels,
-   read the hidden JWT marker from the current custom check output, and
-   recalculate pending vs success from the stored `version_created_at`.
+1. `opened` / `reopened` / `synchronize` で、現在の head SHA に対して
+   `queued` の custom check を作成または更新します。
+2. Renovate 後続 workflow が open な `renovate/*` PR を走査し、
+   Renovate JSON ログから release metadata を復元して、
+   `version_created_at` を含む HS256 JWT を生成します。
+3. その JWT を custom check の `output.text` に HTML コメントとして埋め込み、
+   check を `in_progress` または `completed` に進めます。
+4. その後の `labeled` / `unlabeled` では Worker が現在のラベルを取得し、
+   埋め込まれた JWT の `version_created_at` を使って pending / success を再計算します。
 
-For Renovate PRs, current labels decide how long the check waits:
+待機日数は現在のラベルで決まります。
 
-1. `security` completes immediately with success.
-2. `renovate-wait-<N>d` waits `N` full days, where `N >= 1`.
-3. Otherwise `DEFAULT_WAIT_DAYS` is used.
+1. `security` があれば即時 success
+2. `renovate-wait-<N>d` があれば `N` 日待機
+3. どちらもなければ `DEFAULT_WAIT_DAYS`
 
-Elapsed days are calculated from the resolved release `version_created_at`, not
-from `pull_request.created_at`. Before the wait has elapsed the check stays
-`in_progress`; after it has elapsed the check is `completed` with a `success`
-conclusion. If GitHub already exposes the built-in `renovate/stability-days`
-check for the current head SHA, the custom check mirrors that gate safely: a
-passing built-in check lets the custom check complete, and a still-pending
-built-in check keeps the custom check pending.
+経過日数の基準は `pull_request.created_at` ではなく
+`version_created_at` です。待機期間が終わるまでは check は
+`in_progress`、終わったら `completed` + `success` になります。
 
-The hidden JWT marker is stored in the custom check `output.text` field as an
-HTML comment so the Worker can retrieve it later via the GitHub Checks API. The
-Renovate workflow writes a trace-level JSON log file with a `logContext` for the
-selected repository so the follow-up step can prefer Renovate's own resolved
-`releaseTimestamp` data. If metadata is unavailable in those logs, the check
-stays or returns to `queued` with an explanatory summary instead of inventing a
-timestamp. When a single Renovate branch contains multiple upgrades, the helper
-uses the most recent logged `releaseTimestamp` so the wait does not clear before
-the youngest included release is old enough. Common queued causes are an unreadable
-or missing Renovate JSON log file, no `processBranch()` entry for this branch in
-the current Renovate run, or a mismatched `RENOVATE_LOG_CONTEXT`.
+GitHub が同じ head SHA に対して組み込みの `renovate/stability-days` check を
+持っている場合は、その結果を優先します。組み込み check が成功済みなら
+custom check も success、まだ完了していなければ custom check も pending のままです。
 
-## Configuration
+## release metadata の扱い
 
-Wrangler variables/secrets:
+JWT は custom check の `output.text` に次の形式で保存します。
 
-- `DEFAULT_WAIT_DAYS`: variable for the default wait period. Invalid or
-  missing values safely fall back to `3`.
-- `GITHUB_APP_CLIENT_ID`: secret used as the GitHub App JWT issuer.
-- `GITHUB_APP_PRIVATE_KEY`: secret used both to sign RS256 GitHub App JWTs and
-  as the shared secret for HS256 pending-state tokens.
-- `GITHUB_APP_WEBHOOK_SECRET`: secret used for `X-Hub-Signature-256`
-  verification. Requests are rejected when it is missing or invalid.
+```html
+<!-- custom-stability-days-jwt:... -->
+```
 
-The GitHub App needs permission to read repository installation metadata and
-write checks for repositories that receive the webhook. The Renovate workflow
-must also receive the same private key as `PRIVATE_KEY` so the follow-up step
-can mint matching HS256 pending-state tokens.
+Renovate 後続 workflow は `RENOVATE_LOG_CONTEXT` を使って対象リポジトリの
+JSON ログだけを評価し、Renovate 自身が解決した `releaseTimestamp` を優先して
+使います。ログから metadata を取得できない場合は timestamp を推測せず、
+理由付きで check を `queued` に戻します。
 
-## Local validation
+1 本の Renovate ブランチに複数更新が含まれる場合は、ログ中で最も新しい
+`releaseTimestamp` を採用します。これにより、まとめられた更新のうち最も若い
+リリースが十分に古くなる前に success へ進んでしまうことを防ぎます。
 
-Run the TypeScript checks from this directory:
+## 設定
+
+Worker が利用する変数・シークレット:
+
+- `DEFAULT_WAIT_DAYS`: デフォルト待機日数。無効値や未設定時は安全側で `3`
+- `GITHUB_APP_CLIENT_ID`: GitHub App JWT の issuer
+- `GITHUB_APP_PRIVATE_KEY`: GitHub App の RS256 署名と pending-state JWT の
+  HS256 shared secret を兼ねる秘密鍵
+- `GITHUB_APP_WEBHOOK_SECRET`: `X-Hub-Signature-256` 検証用シークレット
+
+GitHub App には、対象リポジトリの installation 情報を読める権限と、
+Checks を更新できる権限が必要です。Renovate 後続 workflow 側にも同じ
+秘密鍵を `PRIVATE_KEY` として渡し、互換性のある pending-state JWT を
+生成できるようにしてください。
+
+## ローカル検証
+
+このディレクトリで次を実行します。
 
 ```sh
 npm ci
 npm run typecheck
 npm test
-```
-
-To validate the full Worker build (dry-run via Wrangler):
-
-```sh
 npm run build
 ```
 
-## Deployment basics
+`npm run build` は `wrangler deploy --dry-run --outdir dist` を使い、
+Cloudflare Workers へ送られる前のバンドル結果を確認します。
 
-Production deployments run from GitHub Actions on pushes to `main` via
-`.github/workflows/deploy-worker.yaml`. You can also run that workflow manually
-from `main` to redeploy the same Worker; the deploy job intentionally skips
-non-`main` refs so branch runs cannot overwrite production.
+## デプロイ
 
-Do not store secrets in `wrangler.toml`. Configure or rotate Worker secrets with
-Wrangler before the first deployment, and whenever those values change:
+このリポジトリでは Worker を GitHub Actions からデプロイしません。
+TypeScript のビルドと本番デプロイは Cloudflare Workers 側で行う前提です。
+
+`wrangler.toml` では `main = "src/index.ts"` を指定しているため、
+Cloudflare Workers は TypeScript の entrypoint から直接ビルドできます。
+
+シークレットは `wrangler.toml` に書かず、Cloudflare Workers 側の設定または
+`wrangler secret put` で登録してください。
 
 ```sh
 wrangler secret put GITHUB_APP_CLIENT_ID
@@ -113,5 +112,4 @@ wrangler secret put GITHUB_APP_PRIVATE_KEY
 wrangler secret put GITHUB_APP_WEBHOOK_SECRET
 ```
 
-Configure the deployed Worker URL as a GitHub App webhook endpoint for
-`pull_request` events.
+デプロイ済み Worker の URL は、GitHub App の `pull_request` webhook エンドポイントに設定します。

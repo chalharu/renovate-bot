@@ -149,7 +149,7 @@ async function hmacVerify(
 	return crypto.subtle.verify(
 		"HMAC",
 		key,
-		signature,
-		encoder.encode(signingInput),
+		Uint8Array.from(signature),
+		Uint8Array.from(encoder.encode(signingInput)),
 	);
 }
