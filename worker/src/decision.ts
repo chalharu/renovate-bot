@@ -251,12 +251,21 @@ function checkRunTitle(state: CheckState): string {
 	}
 }
 
-export function checkRunBody(plan: CheckRunPlan): Record<string, unknown> {
+function checkRunOutput(plan: CheckRunPlan): {
+	title: string;
+	summary: string;
+	text?: string;
+} {
 	const output = {
 		title: checkRunTitle(plan.state),
 		summary: plan.summary,
-		text: plan.text,
 	};
+	if (plan.text === null) return output;
+	return { ...output, text: plan.text };
+}
+
+export function checkRunBody(plan: CheckRunPlan): Record<string, unknown> {
+	const output = checkRunOutput(plan);
 	switch (plan.state) {
 		case "queue":
 			return {
@@ -286,11 +295,7 @@ export function checkRunBody(plan: CheckRunPlan): Record<string, unknown> {
 export function checkRunUpdateBody(
 	plan: CheckRunPlan,
 ): Record<string, unknown> {
-	const output = {
-		title: checkRunTitle(plan.state),
-		summary: plan.summary,
-		text: plan.text,
-	};
+	const output = checkRunOutput(plan);
 	switch (plan.state) {
 		case "queue":
 			return { status: "queued", output };
