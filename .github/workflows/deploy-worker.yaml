@@ -6,9 +6,10 @@ name: Deploy Worker
       - main
     paths:
       - '.github/workflows/deploy-worker.yaml'
-      - 'worker/Cargo.lock'
-      - 'worker/Cargo.toml'
       - 'worker/src/**'
+      - 'worker/package.json'
+      - 'worker/package-lock.json'
+      - 'worker/tsconfig.json'
       - 'worker/wrangler.toml'
 concurrency:
   group: deploy-worker
@@ -30,18 +31,17 @@ jobs:
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - name: Install Worker Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --target wasm32-unknown-unknown
-      - name: Use Worker Rust toolchain
-        run: rustup default 1.95.0
-      - name: Install cargo-chef
-        run: cargo +1.95.0 install cargo-chef --locked
-      - name: Prepare cargo-chef recipe
+      - name: Set up Node.js
+        # v4.4.0
+        uses: >-
+          actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install Worker dependencies
         working-directory: worker
-        run: cargo +1.95.0 chef prepare --recipe-path recipe.json
-      - name: Cook wasm dependencies with cargo-chef
-        working-directory: worker
-        run: cargo +1.95.0 chef cook --recipe-path recipe.json --target wasm32-unknown-unknown --release
+        run: npm ci
       - name: Deploy Worker
         id: deploy
         # v3.15.0

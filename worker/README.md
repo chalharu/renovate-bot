@@ -1,7 +1,7 @@
 # custom-stability-days Worker
 
-This directory contains the Cloudflare Workers Rust webhook endpoint for the
-custom Renovate stability check.
+This directory contains the Cloudflare Workers TypeScript webhook endpoint for
+the custom Renovate stability check.
 
 The Worker accepts GitHub `pull_request` webhooks for Renovate PR branches
 (`pull_request.head.ref` starts with `renovate/`) and manages a check run named
@@ -83,21 +83,18 @@ can mint matching HS256 pending-state tokens.
 
 ## Local validation
 
-Run the Rust checks from this directory:
+Run the TypeScript checks from this directory:
 
 ```sh
-cargo fmt --check
-cargo check
-cargo test
+npm ci
+npm run typecheck
+npm test
 ```
 
-To validate the Worker target and release build:
+To validate the full Worker build (dry-run via Wrangler):
 
 ```sh
-rustup target add wasm32-unknown-unknown
-cargo check --target wasm32-unknown-unknown
-cargo install worker-build --locked
-worker-build --release
+npm run build
 ```
 
 ## Deployment basics

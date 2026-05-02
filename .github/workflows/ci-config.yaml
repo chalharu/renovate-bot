@@ -40,8 +40,8 @@ jobs:
           persist-credentials: false
       - name: Run repository workflow helper tests
         run: node --test .github/scripts/renovate-repositories.test.js
-  rust_worker_regression:
-    name: Rust Worker regression
+  ts_worker_regression:
+    name: TypeScript Worker regression
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -56,41 +56,19 @@ jobs:
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - name: Cache Worker cargo artifacts
-        # v4.2.4
+      - name: Set up Node.js
+        # v4.4.0
         uses: >-
-          actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+          actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            worker/target
-          key: >-
-            worker-ci-cargo-chef-${{ runner.os }}-${{ hashFiles('worker/Cargo.lock', 'worker/Cargo.toml') }}
-          restore-keys: |
-            worker-ci-cargo-chef-${{ runner.os }}-
-      - name: Install Worker Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --target wasm32-unknown-unknown
-      - name: Use Worker Rust toolchain
-        run: rustup default 1.95.0
-      - name: Check Rust formatting
-        run: cargo +1.95.0 fmt --check
-      - name: Check Rust Worker logic
-        run: cargo +1.95.0 check
-      - name: Check Cloudflare Worker target
-        run: cargo +1.95.0 check --target wasm32-unknown-unknown
-      - name: Run Rust tests
-        run: cargo +1.95.0 test
-      - name: Install cargo-chef
-        run: cargo +1.95.0 install cargo-chef --locked
-      - name: Prepare cargo-chef recipe
-        run: cargo +1.95.0 chef prepare --recipe-path recipe.json
-      - name: Cook host dependencies with cargo-chef
-        run: cargo +1.95.0 chef cook --recipe-path recipe.json
-      - name: Cook wasm dependencies with cargo-chef
-        run: cargo +1.95.0 chef cook --recipe-path recipe.json --target wasm32-unknown-unknown --release
-      - name: Install Worker build tool
-        run: cargo +1.95.0 install worker-build --locked
-      - name: Build Cloudflare Worker
-        run: worker-build --release
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install Worker dependencies
+        run: npm ci
+      - name: Check TypeScript types
+        run: npm run typecheck
+      - name: Run Worker tests
+        run: npm test
+      - name: Build Worker (dry-run)
+        run: npm run build

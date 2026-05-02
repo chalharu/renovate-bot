@@ -1,0 +1,16 @@
+{
+	"name": "custom-stability-days",
+	"private": true,
+	"scripts": {
+		"typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+		"test": "node --import tsx --test src/decision.test.ts src/signature.test.ts src/state_token.test.ts",
+		"build": "wrangler deploy --dry-run --outdir dist"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20250525.0",
+		"@types/node": "^22.19.17",
+		"tsx": "^4.19.4",
+		"typescript": "^5.8.3",
+		"wrangler": "^4.0.0"
+	}
+}

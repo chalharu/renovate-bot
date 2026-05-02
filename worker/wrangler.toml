@@ -1,9 +1,6 @@
 name = "custom-stability-days"
-main = "build/worker/shim.mjs"
+main = "src/index.ts"
 compatibility_date = "2026-05-01"
-
-[build]
-command = "cargo install -q worker-build --locked && worker-build --release"
 
 [vars]
 DEFAULT_WAIT_DAYS = "3"

@@ -3,7 +3,7 @@
 /package-lock.json
 /package.json
 
-# Rust and Cloudflare Workers build artifacts.
-/worker/target/
-/worker/build/
+# Cloudflare Workers build artifacts.
+/worker/node_modules/
+/worker/dist/
 /worker/.wrangler/
