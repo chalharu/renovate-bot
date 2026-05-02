@@ -21,7 +21,6 @@ import { verifyGithubWebhook } from "./signature.js";
 import {
 	decodeStateToken,
 	type PendingStateTokenClaims,
-	StateTokenError,
 } from "./state_token.js";
 
 export interface Env {
@@ -314,7 +313,7 @@ async function extractLatestPendingStateAsync(
 	target: CheckRunTarget,
 ): Promise<{ stateToken: string; claims: PendingStateTokenClaims } | null> {
 	const checkRun = findLatestCheckRun(checkRuns, CHECK_NAME);
-	if (!checkRun || !checkRun.output?.text) return null;
+	if (!checkRun?.output?.text) return null;
 
 	const stateToken = extractStateTokenMarker(checkRun.output.text);
 	if (!stateToken) return null;

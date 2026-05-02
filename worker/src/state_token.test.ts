@@ -33,7 +33,7 @@ describe("encodeStateToken / decodeStateToken", () => {
 	it("rejects a tampered token (appended character)", async () => {
 		const token = await encodeStateToken("secret", makeClaims());
 		await assert.rejects(
-			() => decodeStateToken("secret", token + "x"),
+			() => decodeStateToken("secret", `${token}x`),
 			(err: unknown) =>
 				err instanceof StateTokenError && err.code === "invalid_signature",
 		);

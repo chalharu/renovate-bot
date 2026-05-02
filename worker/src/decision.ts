@@ -140,7 +140,7 @@ export function parseWaitLabel(label: string): number | null {
 		label.length - WAIT_LABEL_SUFFIX.length,
 	);
 	const days = parseInt(middle, 10);
-	if (isNaN(days) || days < 1 || String(days) !== middle) return null;
+	if (Number.isNaN(days) || days < 1 || String(days) !== middle) return null;
 	return days;
 }
 

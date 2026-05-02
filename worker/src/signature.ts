@@ -21,7 +21,7 @@ export async function verifyGithubSignature(
 	body: Uint8Array,
 	signatureHeader: string | null | undefined,
 ): Promise<boolean> {
-	if (!signatureHeader || !signatureHeader.startsWith(GITHUB_SHA256_PREFIX)) {
+	if (!signatureHeader?.startsWith(GITHUB_SHA256_PREFIX)) {
 		return false;
 	}
 	const signatureHex = signatureHeader.slice(GITHUB_SHA256_PREFIX.length);
@@ -47,7 +47,7 @@ function hexToBytes(hex: string): Uint8Array {
 	const bytes = new Uint8Array(hex.length / 2);
 	for (let i = 0; i < hex.length; i += 2) {
 		const byte = parseInt(hex.slice(i, i + 2), 16);
-		if (isNaN(byte)) throw new Error("invalid hex string");
+		if (Number.isNaN(byte)) throw new Error("invalid hex string");
 		bytes[i / 2] = byte;
 	}
 	return bytes;
