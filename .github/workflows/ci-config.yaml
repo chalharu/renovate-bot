@@ -38,10 +38,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run repository workflow helper tests
-        run: >-
-          node --test
-          .github/scripts/renovate-repositories.test.js
-          .github/scripts/renovate-stability-days.test.js
+        run: node --test .github/scripts/renovate-repositories.test.js .github/scripts/renovate-stability-days.test.js
   ts_worker_regression:
     name: TypeScript Worker regression
     runs-on: ubuntu-latest
