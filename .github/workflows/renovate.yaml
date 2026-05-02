@@ -1,5 +1,5 @@
 name: Renovate
-on:
+'on':
   workflow_dispatch:
   schedule:
     - cron: '*/5 * * * *'
@@ -17,12 +17,16 @@ jobs:
       selection_map: ${{ steps.list_repositories.outputs.selection_map }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        # v6.0.2
+        uses: >-
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Get token
         id: get_token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        # v3.1.1
+        uses: >-
+          actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
@@ -30,7 +34,9 @@ jobs:
           permission-contents: read
       - name: List accessible repositories
         id: list_repositories
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        # v9.0.0
+        uses: >-
+          actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           github-token: ${{ steps.get_token.outputs.token }}
           script: |
@@ -42,11 +48,19 @@ jobs:
               formatPublicRepositoryEligibilityLog,
               maskPrivateRepositories,
               toEligibleRepository,
-            } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
+            } = require(
+              path.join(
+                process.env.GITHUB_WORKSPACE,
+                ".github/scripts/renovate-repositories.js",
+              ),
+            );
 
-            const repositories = await github.paginate("GET /installation/repositories", {
-              per_page: 100,
-            });
+            const repositories = await github.paginate(
+              "GET /installation/repositories",
+              {
+                per_page: 100,
+              },
+            );
             const accessibleRepositories = (await filterEligibleRepositories({
               github,
               repositories,
@@ -63,16 +77,29 @@ jobs:
               },
             })).map(toEligibleRepository);
 
-            maskPrivateRepositories({ core, repositories: accessibleRepositories });
-            core.setOutput("matrix", JSON.stringify(buildRepositoryMatrix({
+            maskPrivateRepositories({
+              core,
               repositories: accessibleRepositories,
-            })));
-            core.setOutput("selection_map", JSON.stringify(buildRepositorySelectionMap({
-              repositories: accessibleRepositories,
-            })));
-            core.setOutput("repository_count", String(accessibleRepositories.length));
+            });
+            core.setOutput(
+              "matrix",
+              JSON.stringify(buildRepositoryMatrix({
+                repositories: accessibleRepositories,
+              })),
+            );
+            core.setOutput(
+              "selection_map",
+              JSON.stringify(buildRepositorySelectionMap({
+                repositories: accessibleRepositories,
+              })),
+            );
+            core.setOutput(
+              "repository_count",
+              String(accessibleRepositories.length),
+            );
   renovate:
-    name: Self-hosted Renovate (${{ matrix.repository || format('private-{0}', matrix.repository_index) }})
+    name: >-
+      Self-hosted Renovate (${{ matrix.repository || format('private-{0}', matrix.repository_index) }})
     needs: enumerate_repositories
     if: ${{ needs.enumerate_repositories.outputs.repository_count != '0' }}
     strategy:
@@ -84,12 +111,16 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        # v6.0.2
+        uses: >-
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Get repository list token
         id: get_repository_list_token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        # v3.1.1
+        uses: >-
+          actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
@@ -97,11 +128,14 @@ jobs:
           permission-contents: read
       - name: Resolve repository details
         id: resolve_repository
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        # v9.0.0
+        uses: >-
+          actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           REPOSITORY: ${{ matrix.repository }}
           REPOSITORY_INDEX: ${{ matrix.repository_index }}
-          SELECTION_MAP: ${{ needs.enumerate_repositories.outputs.selection_map }}
+          SELECTION_MAP: >-
+            ${{ needs.enumerate_repositories.outputs.selection_map }}
         with:
           github-token: ${{ steps.get_repository_list_token.outputs.token }}
           script: |
@@ -111,10 +145,18 @@ jobs:
               maskPrivateRepositories,
               resolveEligibleRepositorySelection,
               resolveRepositoryLogLevel,
-            } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
-            const repositories = await github.paginate("GET /installation/repositories", {
-              per_page: 100,
-            });
+            } = require(
+              path.join(
+                process.env.GITHUB_WORKSPACE,
+                ".github/scripts/renovate-repositories.js",
+              ),
+            );
+            const repositories = await github.paginate(
+              "GET /installation/repositories",
+              {
+                per_page: 100,
+              },
+            );
             const selectionMap = JSON.parse(process.env.SELECTION_MAP || "[]");
             const repository = await resolveEligibleRepositorySelection({
               github,
@@ -128,9 +170,14 @@ jobs:
             const logLevel = resolveRepositoryLogLevel({ repository });
 
             if (repository.private) {
-              core.info("Selected private repository for Renovate (details masked).");
+              core.info(
+                "Selected private repository for Renovate (details masked).",
+              );
             } else {
-              core.info(`Selected public repository ${repository.full_name} for Renovate.`);
+              core.info(
+                `Selected public repository ${repository.full_name} ` +
+                  "for Renovate.",
+              );
             }
 
             const logLevelMessage = formatRepositoryLogLevelLog({
@@ -149,14 +196,17 @@ jobs:
             core.setOutput("log_level", logLevel);
       - name: Get token
         id: get_token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        # v3.1.1
+        uses: >-
+          actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
           owner: ${{ steps.resolve_repository.outputs.owner }}
           repositories: ${{ steps.resolve_repository.outputs.repository }}
-          # Renovate reads check runs and writes commit statuses for branch stability checks.
-          permission-checks: read
+          # Renovate reads check runs.
+          # The follow-up step updates the custom stability check.
+          permission-checks: write
           permission-contents: write
           permission-vulnerability-alerts: read
           permission-issues: write
@@ -164,14 +214,21 @@ jobs:
           permission-statuses: write
           permission-workflows: write
       - name: Probe Dependabot alert access
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        # v9.0.0
+        uses: >-
+          actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           github-token: ${{ steps.get_token.outputs.token }}
           script: |
             const path = require("node:path");
             const {
               probeDependabotAlertAccess,
-            } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/renovate-repositories.js"));
+            } = require(
+              path.join(
+                process.env.GITHUB_WORKSPACE,
+                ".github/scripts/renovate-repositories.js",
+              ),
+            );
 
             const repository = {
               owner: process.env.REPOSITORY_OWNER,
@@ -191,23 +248,31 @@ jobs:
               });
             } catch (error) {
               core.warning(
-                `Dependabot alert access probe errored for ${repositoryLabel} (status: ${error?.status ?? "unknown"}). ${error?.message ?? "Unexpected API failure."} Renovate will continue.`,
+                "Dependabot alert access probe errored for " +
+                  `${repositoryLabel} ` +
+                  `(status: ${error?.status ?? "unknown"}). ` +
+                  `${error?.message ?? "Unexpected API failure."} ` +
+                  "Renovate will continue.",
               );
               return;
             }
 
             if (probeResult.ok) {
               core.info(
-                `Dependabot alert access probe succeeded for ${repositoryLabel}. ${probeResult.reason}.`,
+                "Dependabot alert access probe succeeded for " +
+                  `${repositoryLabel}. ` +
+                  `${probeResult.reason}.`,
               );
               return;
             }
 
             core.warning(
-              `Dependabot alert access probe failed for ${repositoryLabel}. ${probeResult.reason}. Renovate will continue.`,
+              `Dependabot alert access probe failed for ${repositoryLabel}. ` +
+                `${probeResult.reason}. Renovate will continue.`,
             );
         env:
-          REPOSITORY_FULL_NAME: ${{ steps.resolve_repository.outputs.full_name }}
+          REPOSITORY_FULL_NAME: >-
+            ${{ steps.resolve_repository.outputs.full_name }}
           REPOSITORY_NAME: ${{ steps.resolve_repository.outputs.repository }}
           REPOSITORY_OWNER: ${{ steps.resolve_repository.outputs.owner }}
           REPOSITORY_PRIVATE: ${{ steps.resolve_repository.outputs.private }}
@@ -221,8 +286,58 @@ jobs:
         env:
           RENOVATE_AUTODISCOVER: "false"
           RENOVATE_REQUIRE_CONFIG: "optional"
-          RENOVATE_REPOSITORIES: ${{ steps.resolve_repository.outputs.full_name }}
+          RENOVATE_REPOSITORIES: >-
+            ${{ steps.resolve_repository.outputs.full_name }}
           RENOVATE_ONBOARDING: "false"
           RENOVATE_PLATFORM_COMMIT: "true"
-          RENOVATE_HOST_RULES: '[{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]'
+          RENOVATE_LOG_CONTEXT: >-
+            ${{ steps.resolve_repository.outputs.full_name }}
+          RENOVATE_HOST_RULES: >-
+            [{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]
+          LOG_CONTEXT: >-
+            ${{ steps.resolve_repository.outputs.full_name }}
+          LOG_FILE: ${{ runner.temp }}/renovate-log.jsonl
+          LOG_FILE_FORMAT: json
+          LOG_FILE_LEVEL: trace
           LOG_LEVEL: ${{ steps.resolve_repository.outputs.log_level }}
+      - name: Reconcile custom stability-days checks
+        if: >-
+          ${{ always() && steps.get_token.outcome == 'success' && steps.resolve_repository.outcome == 'success' }}
+        # v9.0.0
+        uses: >-
+          actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          DEFAULT_WAIT_DAYS: "3"
+          RENOVATE_LOG_CONTEXT: >-
+            ${{ steps.resolve_repository.outputs.full_name }}
+          RENOVATE_LOG_FILE: ${{ runner.temp }}/renovate-log.jsonl
+          REPOSITORY_NAME: ${{ steps.resolve_repository.outputs.repository }}
+          REPOSITORY_OWNER: ${{ steps.resolve_repository.outputs.owner }}
+          SHARED_SECRET: ${{ secrets.PRIVATE_KEY }}
+        with:
+          github-token: ${{ steps.get_token.outputs.token }}
+          script: |
+            const path = require("node:path");
+            const {
+              processRepositoryRenovatePullRequests,
+            } = require(
+              path.join(
+                process.env.GITHUB_WORKSPACE,
+                ".github/scripts/renovate-stability-days.js",
+              ),
+            );
+
+            await processRepositoryRenovatePullRequests({
+              github,
+              owner: process.env.REPOSITORY_OWNER,
+              repo: process.env.REPOSITORY_NAME,
+              secret: process.env.SHARED_SECRET,
+              renovateLogFile: process.env.RENOVATE_LOG_FILE,
+              expectedLogContext: process.env.RENOVATE_LOG_CONTEXT,
+              defaultWaitDays: Number.parseInt(
+                process.env.DEFAULT_WAIT_DAYS ?? "3",
+                10,
+              ),
+              now: new Date(),
+              logger: core,
+            });
