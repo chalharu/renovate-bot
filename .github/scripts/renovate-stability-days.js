@@ -83,6 +83,7 @@ const createPendingStateToken = ({
 	repositoryFullName,
 	prNumber,
 	headSha,
+	version,
 	versionCreatedAt,
 	now = new Date(),
 } = {}) => {
@@ -91,6 +92,9 @@ const createPendingStateToken = ({
 		repository_full_name: repositoryFullName,
 		pr_number: prNumber,
 		head_sha: headSha,
+		...(typeof version === "string" && version.trim().length > 0
+			? { version: version.trim() }
+			: {}),
 		version_created_at: new Date(versionCreatedAt).toISOString(),
 		iat: Math.floor(now.getTime() / 1000),
 	});
@@ -139,6 +143,7 @@ const decodePendingStateToken = ({ secret, token } = {}) => {
 		typeof claims?.repository_full_name !== "string" ||
 		!Number.isInteger(claims?.pr_number) ||
 		typeof claims?.head_sha !== "string" ||
+		(claims?.version !== undefined && typeof claims.version !== "string") ||
 		Number.isNaN(versionCreatedAt.getTime())
 	) {
 		throw new Error("invalid pending state token claims");
@@ -148,6 +153,7 @@ const decodePendingStateToken = ({ secret, token } = {}) => {
 		repository_full_name: claims.repository_full_name,
 		pr_number: claims.pr_number,
 		head_sha: claims.head_sha,
+		version: claims.version,
 		version_created_at: versionCreatedAt.toISOString(),
 		iat: claims.iat,
 	};
@@ -336,7 +342,10 @@ const collectLoggedBranchUpdates = ({
 						(typeof upgrade?.newVersion === "string" ||
 							typeof upgrade?.newValue === "string"),
 				)
-				.map((upgrade) => upgrade.releaseTimestamp),
+				.map((upgrade) => ({
+					versionCreatedAt: upgrade.releaseTimestamp,
+					version: String(upgrade.newVersion ?? upgrade.newValue).trim(),
+				})),
 		),
 	];
 };
@@ -360,11 +369,16 @@ const selectLoggedBranchUpdate = ({
 		};
 	}
 
+	const latestUpdate = [...updates].sort(
+		(left, right) =>
+			new Date(right.versionCreatedAt).getTime() -
+			new Date(left.versionCreatedAt).getTime(),
+	)[0];
+
 	return {
 		ok: true,
-		versionCreatedAt: [...updates].sort(
-			(left, right) => new Date(right).getTime() - new Date(left).getTime(),
-		)[0],
+		version: latestUpdate.version,
+		versionCreatedAt: latestUpdate.versionCreatedAt,
 	};
 };
 
@@ -418,7 +432,29 @@ const extractReusablePendingState = ({
 
 	return {
 		token,
+		version: claims.version,
 		versionCreatedAt: claims.version_created_at,
+	};
+};
+
+const buildPrUpdatedAtFallback = ({ pullRequest } = {}) => {
+	const updatedAt = new Date(
+		pullRequest?.updated_at ?? pullRequest?.updatedAt ?? "",
+	);
+	if (Number.isNaN(updatedAt.getTime())) {
+		return {
+			ok: false,
+			reason:
+				"No releaseTimestamp metadata for this branch was found in the Renovate JSON logs, and the PR updated timestamp is unavailable.",
+		};
+	}
+	return {
+		ok: true,
+		version: null,
+		versionCreatedAt: updatedAt.toISOString(),
+		summary:
+			`No releaseTimestamp metadata for this branch was found in the Renovate JSON logs; ` +
+			`using PR updated timestamp ${updatedAt.toISOString()} as a conservative fallback.`,
 	};
 };
 
@@ -536,6 +572,11 @@ const processPullRequest = async ({
 			: buildBuiltInPendingPlan({ pullRequest });
 	} else {
 		let pendingState;
+		const loggedUpdate = selectLoggedBranchUpdate({
+			logEntries: renovateLogEntries,
+			branchName: pullRequest?.head?.ref,
+			expectedLogContext,
+		});
 
 		if (customCheckRun) {
 			try {
@@ -546,7 +587,6 @@ const processPullRequest = async ({
 					prNumber: pullRequest.number,
 					headSha: pullRequest.head.sha,
 				});
-				loadLabelNames();
 			} catch (error) {
 				logger.warn?.(
 					`Ignoring reusable pending state for Renovate PR #${pullRequest.number}: ${error?.message ?? error}`,
@@ -555,31 +595,61 @@ const processPullRequest = async ({
 			}
 		}
 
-		if (!pendingState) {
-			const loggedUpdate = selectLoggedBranchUpdate({
-				logEntries: renovateLogEntries,
-				branchName: pullRequest?.head?.ref,
-				expectedLogContext,
-			});
-			if (!loggedUpdate.ok) {
-				logger.warn?.(
-					`Keeping Renovate PR #${pullRequest.number} queued: ${loggedUpdate.reason}`,
-				);
-				plan = buildQueuePlan({
-					pullRequest,
-					summary: loggedUpdate.reason,
-				});
+		if (loggedUpdate.ok) {
+			if (pendingState?.version === loggedUpdate.version) {
+				loadLabelNames();
 			} else {
+				if (pendingState) {
+					logger.info?.(
+						`Refreshing pending state token for Renovate PR #${pullRequest.number}: ` +
+							`${pendingState.version ?? "unknown"} -> ${loggedUpdate.version}.`,
+					);
+				}
 				pendingState = {
 					token: createPendingStateToken({
 						secret,
 						repositoryFullName: `${owner}/${repo}`,
 						prNumber: pullRequest.number,
 						headSha: pullRequest.head.sha,
+						version: loggedUpdate.version,
 						versionCreatedAt: loggedUpdate.versionCreatedAt,
 						now,
 					}),
+					version: loggedUpdate.version,
 					versionCreatedAt: loggedUpdate.versionCreatedAt,
+				};
+				loadLabelNames();
+			}
+		} else if (pendingState) {
+			logger.warn?.(
+				`Reusing embedded pending state for Renovate PR #${pullRequest.number}: ${loggedUpdate.reason}`,
+			);
+			loadLabelNames();
+		} else {
+			const fallback = buildPrUpdatedAtFallback({ pullRequest });
+			if (!fallback.ok) {
+				logger.warn?.(
+					`Keeping Renovate PR #${pullRequest.number} queued: ${fallback.reason}`,
+				);
+				plan = buildQueuePlan({
+					pullRequest,
+					summary: fallback.reason,
+				});
+			} else {
+				logger.warn?.(
+					`Using PR updated timestamp fallback for Renovate PR #${pullRequest.number}: ${fallback.versionCreatedAt}`,
+				);
+				pendingState = {
+					token: createPendingStateToken({
+						secret,
+						repositoryFullName: `${owner}/${repo}`,
+						prNumber: pullRequest.number,
+						headSha: pullRequest.head.sha,
+						versionCreatedAt: fallback.versionCreatedAt,
+						now,
+					}),
+					version: fallback.version,
+					versionCreatedAt: fallback.versionCreatedAt,
 				};
 				loadLabelNames();
 			}

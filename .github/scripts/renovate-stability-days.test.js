@@ -36,6 +36,7 @@ test("creates reusable pending state tokens with normalized shared secrets", () 
 			repository_full_name: "octo-org/example",
 			pr_number: 42,
 			head_sha: "abc123",
+			version: undefined,
 			version_created_at: "2026-04-28T12:00:00.000Z",
 			iat: 1777636800,
 		},
@@ -56,6 +57,7 @@ test("selects branch release metadata from Renovate JSON logs", () => {
 		}),
 		{
 			ok: true,
+			version: "1.2.3",
 			versionCreatedAt: "2026-04-28T12:00:00Z",
 		},
 	);
@@ -74,6 +76,7 @@ test("uses the most recent release timestamp for grouped renovate branches", () 
 		}),
 		{
 			ok: true,
+			version: "4.5.6",
 			versionCreatedAt: "2026-04-30T12:00:00Z",
 		},
 	);
@@ -101,17 +104,19 @@ test("reuses a valid pending state token from the current custom check", () => {
 
 	assert.deepEqual(reusableState, {
 		token,
+		version: undefined,
 		versionCreatedAt: "2026-04-28T12:00:00.000Z",
 	});
 });
 
-test("moves an existing pending custom check to success without refetching release metadata", async () => {
+test("reuses an existing pending token when Renovate metadata resolves to the same version", async () => {
 	const calls = [];
 	const token = createPendingStateToken({
 		secret: "secret",
 		repositoryFullName: "octo-org/example",
 		prNumber: 42,
 		headSha: "abc123",
+		version: "1.2.3",
 		versionCreatedAt: "2026-04-28T12:00:00Z",
 		now: new Date("2026-04-28T12:00:00Z"),
 	});
@@ -163,6 +168,10 @@ test("moves an existing pending custom check to success without refetching relea
 			},
 		},
 		secret: "secret",
+		renovateLogEntries: parseRenovateJsonLogs(`
+{"logContext":"octo-org/example","msg":"processBranch()","config":{"branchName":"renovate/example","upgrades":[{"depName":"ghcr.io/example/dependency","newVersion":"1.2.3","releaseTimestamp":"2026-04-30T12:00:00Z"}]}}
+`),
+		expectedLogContext: "octo-org/example",
 		now: new Date("2026-05-01T12:00:00Z"),
 	});
 
@@ -173,6 +182,90 @@ test("moves an existing pending custom check to success without refetching relea
 	);
 	assert.equal(calls.at(-1).params.status, "completed");
 	assert.equal(calls.at(-1).params.conclusion, "success");
+});
+
+test("refreshes the pending token when Renovate metadata resolves to a different version", async () => {
+	const calls = [];
+	const token = createPendingStateToken({
+		secret: "secret",
+		repositoryFullName: "octo-org/example",
+		prNumber: 42,
+		headSha: "abc123",
+		version: "1.2.3",
+		versionCreatedAt: "2026-04-28T12:00:00Z",
+		now: new Date("2026-04-28T12:00:00Z"),
+	});
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/issues/{issue_number}/labels") {
+				return {
+					data: [{ name: "renovate-wait-3d" }],
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [
+							{
+								id: 7,
+								name: CUSTOM_CHECK_NAME,
+								status: "in_progress",
+								conclusion: null,
+								output: {
+									summary: "pending",
+									text: formatStateTokenMarker(token),
+								},
+							},
+						],
+					},
+				};
+			}
+			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
+			title: "Update dependency example/dependency to v4.5.6",
+			body: "",
+			head: {
+				ref: "renovate/example",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		renovateLogEntries: parseRenovateJsonLogs(`
+{"logContext":"octo-org/example","msg":"processBranch()","config":{"branchName":"renovate/example","upgrades":[{"depName":"ghcr.io/example/dependency","newVersion":"4.5.6","releaseTimestamp":"2026-04-30T12:00:00Z"}]}}
+`),
+		expectedLogContext: "octo-org/example",
+		now: new Date("2026-05-01T12:00:00Z"),
+	});
+
+	assert.equal(result.state, "pending");
+	assert.equal(
+		calls.at(-1).route,
+		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+	);
+	assert.notEqual(
+		calls.at(-1).params.output.text,
+		formatStateTokenMarker(token),
+	);
+	assert.equal(
+		decodePendingStateToken({
+			secret: "secret",
+			token: extractStateTokenMarker(calls.at(-1).params.output.text),
+		}).version,
+		"4.5.6",
+	);
 });
 
 test("creates a fresh pending check from Renovate JSON logs on the first pass", async () => {
@@ -228,16 +321,23 @@ test("creates a fresh pending check from Renovate JSON logs on the first pass", 
 		calls.at(-1).params.output.text,
 		/<!-- custom-stability-days-jwt:/,
 	);
-	assert.equal(
+	assert.deepEqual(
 		decodePendingStateToken({
 			secret: "secret",
 			token: extractStateTokenMarker(calls.at(-1).params.output.text),
-		}).version_created_at,
-		"2026-04-30T12:00:00.000Z",
+		}),
+		{
+			repository_full_name: "octo-org/example",
+			pr_number: 42,
+			head_sha: "abc123",
+			version: "1.2.3",
+			version_created_at: "2026-04-30T12:00:00.000Z",
+			iat: 1777636800,
+		},
 	);
 });
 
-test("keeps the custom check queued when release metadata cannot be resolved", async () => {
+test("falls back to the current PR updated timestamp when release metadata cannot be resolved", async () => {
 	const calls = [];
 	const github = {
 		async request(route, params) {
@@ -247,6 +347,11 @@ test("keeps the custom check queued when release metadata cannot be resolved", a
 					data: {
 						check_runs: [],
 					},
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/issues/{issue_number}/labels") {
+				return {
+					data: [{ name: "renovate-wait-3d" }],
 				};
 			}
 			if (route === "POST /repos/{owner}/{repo}/check-runs") {
@@ -265,6 +370,7 @@ test("keeps the custom check queued when release metadata cannot be resolved", a
 			number: 42,
 			title: "Update dependency example/dependency",
 			body: "",
+			updated_at: "2026-05-01T12:00:00Z",
 			head: {
 				ref: "renovate/example",
 				sha: "abc123",
@@ -274,13 +380,27 @@ test("keeps the custom check queued when release metadata cannot be resolved", a
 		now: new Date("2026-05-01T12:00:00Z"),
 	});
 
-	assert.equal(result.state, "queue");
+	assert.equal(result.state, "pending");
 	assert.match(
 		result.summary,
-		/No releaseTimestamp metadata for this branch was found in the Renovate JSON logs/,
+		/Waiting 3 full day\(s\) from release timestamp 2026-05-01T12:00:00.000Z/,
 	);
 	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
-	assert.equal(calls.at(-1).params.status, "queued");
+	assert.equal(calls.at(-1).params.status, "in_progress");
+	assert.deepEqual(
+		decodePendingStateToken({
+			secret: "secret",
+			token: extractStateTokenMarker(calls.at(-1).params.output.text),
+		}),
+		{
+			repository_full_name: "octo-org/example",
+			pr_number: 42,
+			head_sha: "abc123",
+			version: undefined,
+			version_created_at: "2026-05-01T12:00:00.000Z",
+			iat: 1777636800,
+		},
+	);
 });
 
 test("creates a fresh pending check when a completed success must be downgraded after label changes", async () => {

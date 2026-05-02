@@ -29,7 +29,7 @@ Cloudflare Workers 向け TypeScript Worker が入っています。
    `queued` の custom check を作成または更新します。
 2. Renovate 後続 workflow が open な `renovate/*` PR を走査し、
    Renovate JSON ログから release metadata を復元して、
-   `version_created_at` を含む HS256 JWT を生成します。
+   `version` と `version_created_at` を含む HS256 JWT を生成します。
 3. その JWT を custom check の `output.text` に HTML コメントとして埋め込み、
    check を `in_progress` または `completed` に進めます。
 4. その後の `labeled` / `unlabeled` では Worker が現在のラベルを取得し、
@@ -59,12 +59,18 @@ JWT は custom check の `output.text` に次の形式で保存します。
 
 Renovate 後続 workflow は `RENOVATE_LOG_CONTEXT` を使って対象リポジトリの
 JSON ログだけを評価し、Renovate 自身が解決した `releaseTimestamp` を優先して
-使います。ログから metadata を取得できない場合は timestamp を推測せず、
-理由付きで check を `queued` に戻します。
+使います。ログから metadata を取得できない場合でも、すでに埋め込まれた JWT が
+あればその `version_created_at` を再利用し、JWT も metadata も無い初回だけは
+現在の PR 更新時刻を保守的な fallback として使います。
 
 1 本の Renovate ブランチに複数更新が含まれる場合は、ログ中で最も新しい
 `releaseTimestamp` を採用します。これにより、まとめられた更新のうち最も若い
 リリースが十分に古くなる前に success へ進んでしまうことを防ぎます。
+
+埋め込まれた JWT がある場合、後続 workflow は Renovate ログから得られた
+metadata と比較します。同じバージョンなら既存 JWT を再利用し、
+バージョンが変わっていれば `version` / `version_created_at` を更新した新しい
+JWT に置き換えます。
 
 ## 設定
 

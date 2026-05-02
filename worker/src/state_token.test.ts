@@ -8,8 +8,10 @@ import {
 	StateTokenError,
 } from "./state_token.js";
 
-const HELPER_COMPAT_TOKEN =
+const LEGACY_HELPER_COMPAT_TOKEN =
 	"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyZXBvc2l0b3J5X2Z1bGxfbmFtZSI6Im93bmVyL3JlcG8iLCJwcl9udW1iZXIiOjQyLCJoZWFkX3NoYSI6ImFiYzEyMyIsInZlcnNpb25fY3JlYXRlZF9hdCI6IjIwMjYtMDQtMjhUMTI6MDA6MDAuMDAwWiIsImlhdCI6MTc3Nzc3Nzc3N30.EM0SpNI8IsqSwRLk6UK5p028QpZkT6uEU6lJmJsbab0";
+const HELPER_COMPAT_TOKEN =
+	"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyZXBvc2l0b3J5X2Z1bGxfbmFtZSI6Im93bmVyL3JlcG8iLCJwcl9udW1iZXIiOjQyLCJoZWFkX3NoYSI6ImFiYzEyMyIsInZlcnNpb24iOiIxLjIuMyIsInZlcnNpb25fY3JlYXRlZF9hdCI6IjIwMjYtMDQtMjhUMTI6MDA6MDAuMDAwWiIsImlhdCI6MTc3Nzc3Nzc3N30.q_kpXG7alRtLy3VsqS5MZ7gSUg59rY2dHswm2uKlgpk";
 const RUST_STYLE_TIMESTAMP_TOKEN =
 	"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyZXBvc2l0b3J5X2Z1bGxfbmFtZSI6Im93bmVyL3JlcG8iLCJwcl9udW1iZXIiOjQyLCJoZWFkX3NoYSI6ImFiYzEyMyIsInZlcnNpb25fY3JlYXRlZF9hdCI6IjIwMjYtMDQtMjhUMTI6MDA6MDBaIiwiaWF0IjoxNzc3Nzc3Nzc3fQ.F7n7KLckDauUzO246smOUo9_1jM-R0NQCph9KZHUTpY";
 
@@ -18,6 +20,7 @@ function makeClaims(): PendingStateTokenClaims {
 		repository_full_name: "owner/repo",
 		pr_number: 42,
 		head_sha: "abc123",
+		version: "1.2.3",
 		version_created_at: "2026-04-28T12:00:00.000Z",
 		iat: 1_777_777_777,
 	};
@@ -63,7 +66,16 @@ describe("encodeStateToken / decodeStateToken", () => {
 		);
 	});
 
-	it("is cross-compatible with tokens produced by the JavaScript helper script", async () => {
+	it("is backward-compatible with legacy helper tokens without a version claim", async () => {
+		const decoded = await decodeStateToken(
+			"secret",
+			LEGACY_HELPER_COMPAT_TOKEN,
+		);
+		assert.deepEqual({ ...decoded, version: "1.2.3" }, makeClaims());
+		assert.equal(decoded.version, undefined);
+	});
+
+	it("is cross-compatible with current tokens produced by the JavaScript helper script", async () => {
 		const decoded = await decodeStateToken("secret", HELPER_COMPAT_TOKEN);
 		assert.deepEqual(decoded, makeClaims());
 	});
@@ -73,6 +85,7 @@ describe("encodeStateToken / decodeStateToken", () => {
 			"secret",
 			RUST_STYLE_TIMESTAMP_TOKEN,
 		);
+		assert.equal(decoded.version, undefined);
 		assert.equal(decoded.version_created_at, "2026-04-28T12:00:00Z");
 		assert.equal(
 			new Date(decoded.version_created_at).toISOString(),

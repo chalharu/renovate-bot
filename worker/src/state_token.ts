@@ -12,6 +12,7 @@ export interface PendingStateTokenClaims {
 	repository_full_name: string;
 	pr_number: number;
 	head_sha: string;
+	version?: string;
 	/** ISO 8601 UTC string, e.g. "2026-04-28T12:00:00.000Z" */
 	version_created_at: string;
 	iat: number;
@@ -111,6 +112,7 @@ function isValidClaims(value: unknown): value is PendingStateTokenClaims {
 		typeof c.repository_full_name === "string" &&
 		typeof c.pr_number === "number" &&
 		typeof c.head_sha === "string" &&
+		(c.version === undefined || typeof c.version === "string") &&
 		typeof c.version_created_at === "string" &&
 		typeof c.iat === "number"
 	);
