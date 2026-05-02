@@ -37,6 +37,7 @@ jobs:
           actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
+          package-manager-cache: false
       - name: Install Worker dependencies
         working-directory: worker
         run: npm ci
