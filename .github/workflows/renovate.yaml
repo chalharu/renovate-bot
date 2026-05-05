@@ -265,7 +265,7 @@ jobs:
         with:
           # Managed by Renovate via renovate.json customManagers.
           configurationFile: renovate.json
-          renovate-version: 43.158.3
+          renovate-version: 43.163.4
           token: '${{ steps.get_token.outputs.token }}'
         env:
           RENOVATE_AUTODISCOVER: "false"
