@@ -437,24 +437,24 @@ const extractReusablePendingState = ({
 	};
 };
 
-const buildPrUpdatedAtFallback = ({ pullRequest } = {}) => {
-	const updatedAt = new Date(
-		pullRequest?.updated_at ?? pullRequest?.updatedAt ?? "",
+const buildPrCreatedAtFallback = ({ pullRequest } = {}) => {
+	const createdAt = new Date(
+		pullRequest?.created_at ?? pullRequest?.createdAt ?? "",
 	);
-	if (Number.isNaN(updatedAt.getTime())) {
+	if (Number.isNaN(createdAt.getTime())) {
 		return {
 			ok: false,
 			reason:
-				"No releaseTimestamp metadata for this branch was found in the Renovate JSON logs, and the PR updated timestamp is unavailable.",
+				"No releaseTimestamp metadata for this branch was found in the Renovate JSON logs, and the PR creation timestamp is unavailable.",
 		};
 	}
 	return {
 		ok: true,
 		version: null,
-		versionCreatedAt: updatedAt.toISOString(),
+		versionCreatedAt: createdAt.toISOString(),
 		summary:
 			`No releaseTimestamp metadata for this branch was found in the Renovate JSON logs; ` +
-			`using PR updated timestamp ${updatedAt.toISOString()} as a conservative fallback.`,
+			`using PR creation timestamp ${createdAt.toISOString()} as a conservative fallback.`,
 	};
 };
 
@@ -620,24 +620,23 @@ const processPullRequest = async ({
 				};
 				loadLabelNames();
 			}
-		} else if (pendingState) {
-			logger.warn?.(
-				`Reusing embedded pending state for Renovate PR #${pullRequest.number}: ${loggedUpdate.reason}`,
-			);
-			loadLabelNames();
 		} else {
-			const fallback = buildPrUpdatedAtFallback({ pullRequest });
-			if (!fallback.ok) {
+			const fallback = buildPrCreatedAtFallback({ pullRequest });
+			const shouldUsePrCreatedAtFallback =
+				fallback.ok &&
+				(!pendingState ||
+					(!pendingState.version &&
+						pendingState.versionCreatedAt !== fallback.versionCreatedAt));
+
+			if (shouldUsePrCreatedAtFallback) {
+				if (pendingState) {
+					logger.info?.(
+						`Refreshing PR creation timestamp fallback for Renovate PR #${pullRequest.number}: ` +
+							`${pendingState.versionCreatedAt} -> ${fallback.versionCreatedAt}.`,
+					);
+				}
 				logger.warn?.(
-					`Keeping Renovate PR #${pullRequest.number} queued: ${fallback.reason}`,
-				);
-				plan = buildQueuePlan({
-					pullRequest,
-					summary: fallback.reason,
-				});
-			} else {
-				logger.warn?.(
-					`Using PR updated timestamp fallback for Renovate PR #${pullRequest.number}: ${fallback.versionCreatedAt}`,
+					`Using PR creation timestamp fallback for Renovate PR #${pullRequest.number}: ${fallback.versionCreatedAt}`,
 				);
 				pendingState = {
 					token: createPendingStateToken({
@@ -652,6 +651,21 @@ const processPullRequest = async ({
 					versionCreatedAt: fallback.versionCreatedAt,
 				};
 				loadLabelNames();
+			} else if (pendingState) {
+				logger.warn?.(
+					`Reusing embedded pending state for Renovate PR #${pullRequest.number}: ${
+						fallback.ok ? loggedUpdate.reason : fallback.reason
+					}`,
+				);
+				loadLabelNames();
+			} else {
+				logger.warn?.(
+					`Keeping Renovate PR #${pullRequest.number} queued: ${fallback.reason}`,
+				);
+				plan = buildQueuePlan({
+					pullRequest,
+					summary: fallback.reason,
+				});
 			}
 		}
 
