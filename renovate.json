@@ -36,6 +36,7 @@
 		{
 			"description": "Disable release-age checks for update types without upstream release timestamps.",
 			"matchUpdateTypes": [
+				"digest",
 				"pin",
 				"pinDigest",
 				"lockFileMaintenance",
