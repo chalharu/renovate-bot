@@ -28,8 +28,9 @@ Cloudflare Workers 向け TypeScript Worker が入っています。
 1. `opened` / `reopened` / `synchronize` で、現在の head SHA に対して
    `queued` の custom check を作成または更新します。
 2. Renovate 後続 workflow が open な `renovate/*` PR を走査し、
-   Renovate JSON ログから release metadata を復元して、
-   `version` と `version_created_at` を含む HS256 JWT を生成します。
+   Renovate JSON ログから `version` と `version_created_at` を含む HS256 JWT を
+   生成します。生成した JWT は PR 本文にも保存し、ログが残っていない後続実行で
+   使う durable state にします。
 3. その JWT を custom check の `output.text` に HTML コメントとして埋め込み、
    check を `in_progress` または `completed` に進めます。
 4. その後の `labeled` / `unlabeled` では Worker が現在のラベルを取得し、
@@ -57,21 +58,32 @@ JWT は custom check の `output.text` に次の形式で保存します。
 <!-- custom-stability-days-jwt:... -->
 ```
 
+Renovate 後続 workflow は、同じ署名済み JWT を PR 本文にも非表示 marker として
+保存します。PR 本文には Renovate template 由来の未署名 metadata は保存しません。
+
+```html
+<!-- custom-stability-days-pr-state-jwt:... -->
+```
+
 Renovate 後続 workflow は `RENOVATE_LOG_CONTEXT` を使って対象リポジトリの
-JSON ログだけを評価し、Renovate 自身が解決した `releaseTimestamp` を優先して
-使います。ログから metadata を取得できない場合でも、すでに埋め込まれた JWT が
-あればその `version_created_at` を再利用し、JWT も metadata も無い初回だけは
-安定した PR 作成時刻を保守的な fallback として使います。旧 fallback で作られた
-`version` なし JWT がある場合も、PR 作成時刻が取得できればその時刻へ更新します。
+JSON ログを評価し、Renovate 自身が解決した `releaseTimestamp` を最優先で
+使います。ログから metadata を取得できない場合は PR 本文の署名済み JWT を読み、
+それでも取得できない場合に限り、既存 check run の `version` 付き署名済み JWT の
+`version_created_at` を再利用します。PR の `created_at` / `updated_at` は
+release timestamp ではなく、release timestamp として使いません。ログ、PR 本文の
+署名済み JWT、check run の `version` 付き署名済み JWT のいずれにも release metadata
+が無ければ check は queued のままになります。
 
 1 本の Renovate ブランチに複数更新が含まれる場合は、ログ中で最も新しい
 `releaseTimestamp` を採用します。これにより、まとめられた更新のうち最も若い
 リリースが十分に古くなる前に success へ進んでしまうことを防ぎます。
 
-埋め込まれた JWT がある場合、後続 workflow は Renovate ログから得られた
-metadata と比較します。同じバージョンなら既存 JWT を再利用し、
-バージョンが変わっていれば `version` / `version_created_at` を更新した新しい
-JWT に置き換えます。
+埋め込まれた JWT がある場合、後続 workflow は Renovate ログまたは PR 本文の
+署名済み JWT と比較します。`version` と `version_created_at` が同じなら
+既存 JWT を再利用し、どちらかが変わっていれば Renovate ログをもとに新しい JWT に
+置き換えます。`version` のない旧 JWT は release metadata として扱わず、Renovate
+ログまたは PR 本文の署名済み JWTに metadata が見つかった時だけ `version` 付き JWT に
+更新します。
 
 ## 設定
 
