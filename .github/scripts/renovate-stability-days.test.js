@@ -5,6 +5,7 @@ const {
 	BUILTIN_STABILITY_CHECK_NAME,
 	CUSTOM_CHECK_NAME,
 	INITIAL_QUEUE_SUMMARY,
+	NO_RELEASE_METADATA_SUMMARY,
 	createPendingStateToken,
 	decodePendingStateToken,
 	extractStateTokenMarker,
@@ -82,6 +83,25 @@ test("uses the most recent release timestamp for grouped renovate branches", () 
 	);
 });
 
+test("uses updated_at from Renovate logs when releaseTimestamp is missing", () => {
+	const logEntries = parseRenovateJsonLogs(`
+{"logContext":"octo-org/example","msg":"processBranch()","config":{"branchName":"renovate/example","upgrades":[{"depName":"ghcr.io/example/dependency","newVersion":"1.2.3","updated_at":"2026-04-28T12:00:00Z"}]}}
+`);
+
+	assert.deepEqual(
+		selectLoggedBranchUpdate({
+			logEntries,
+			branchName: "renovate/example",
+			expectedLogContext: "octo-org/example",
+		}),
+		{
+			ok: true,
+			version: "1.2.3",
+			versionCreatedAt: "2026-04-28T12:00:00Z",
+		},
+	);
+});
+
 test("reuses a valid pending state token from the current custom check", () => {
 	const token = createPendingStateToken({
 		secret: "secret",
@@ -109,7 +129,7 @@ test("reuses a valid pending state token from the current custom check", () => {
 	});
 });
 
-test("reuses an existing pending token when Renovate metadata resolves to the same version", async () => {
+test("reuses an existing pending token when Renovate metadata matches it", async () => {
 	const calls = [];
 	const token = createPendingStateToken({
 		secret: "secret",
@@ -169,7 +189,7 @@ test("reuses an existing pending token when Renovate metadata resolves to the sa
 		},
 		secret: "secret",
 		renovateLogEntries: parseRenovateJsonLogs(`
-{"logContext":"octo-org/example","msg":"processBranch()","config":{"branchName":"renovate/example","upgrades":[{"depName":"ghcr.io/example/dependency","newVersion":"1.2.3","releaseTimestamp":"2026-04-30T12:00:00Z"}]}}
+{"logContext":"octo-org/example","msg":"processBranch()","config":{"branchName":"renovate/example","upgrades":[{"depName":"ghcr.io/example/dependency","newVersion":"1.2.3","releaseTimestamp":"2026-04-28T12:00:00Z"}]}}
 `),
 		expectedLogContext: "octo-org/example",
 		now: new Date("2026-05-01T12:00:00Z"),
@@ -315,6 +335,13 @@ test("creates a fresh pending check from Renovate JSON logs on the first pass", 
 	});
 
 	assert.equal(result.state, "pending");
+	assert.equal(
+		calls.some(
+			({ route }) =>
+				route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+		),
+		false,
+	);
 	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
 	assert.equal(calls.at(-1).params.status, "in_progress");
 	assert.match(
@@ -337,7 +364,7 @@ test("creates a fresh pending check from Renovate JSON logs on the first pass", 
 	);
 });
 
-test("falls back to the current PR updated timestamp when release metadata cannot be resolved", async () => {
+test("uses PR updated_at fallback when JSON logs and check state are missing", async () => {
 	const calls = [];
 	const github = {
 		async request(route, params) {
@@ -368,9 +395,144 @@ test("falls back to the current PR updated timestamp when release metadata canno
 		repo: "example",
 		pullRequest: {
 			number: 42,
+			title: "Update dependency example/dependency to v1.2.3",
+			body: "",
+			updated_at: "2026-04-28T12:00:00Z",
+			head: {
+				ref: "renovate/example",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		now: new Date("2026-05-01T12:00:00Z"),
+	});
+
+	assert.equal(result.state, "success");
+	assert.match(
+		result.summary,
+		/Required wait of 3 full day\(s\) from release timestamp 2026-04-28T12:00:00.000Z has passed/,
+	);
+	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
+	assert.equal(calls.at(-1).params.status, "completed");
+	assert.equal(calls.at(-1).params.conclusion, "success");
+	assert.match(
+		calls.at(-1).params.output.text,
+		/<!-- custom-stability-days-jwt:/,
+	);
+	assert.deepEqual(
+		decodePendingStateToken({
+			secret: "secret",
+			token: extractStateTokenMarker(calls.at(-1).params.output.text),
+		}),
+		{
+			repository_full_name: "octo-org/example",
+			pr_number: 42,
+			head_sha: "abc123",
+			version: undefined,
+			version_created_at: "2026-04-28T12:00:00.000Z",
+			iat: 1777636800,
+		},
+	);
+});
+
+test("queues when logs, check state, and PR updated_at are missing", async () => {
+	const calls = [];
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [],
+					},
+				};
+			}
+			if (route === "POST /repos/{owner}/{repo}/check-runs") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
 			title: "Update dependency example/dependency",
 			body: "",
-			updated_at: "2026-05-01T12:00:00Z",
+			created_at: "2026-04-28T12:00:00Z",
+			head: {
+				ref: "renovate/example",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		now: new Date("2026-05-01T12:00:00Z"),
+	});
+
+	assert.equal(result.state, "queue");
+	assert.equal(result.summary, NO_RELEASE_METADATA_SUMMARY);
+	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
+	assert.equal(calls.at(-1).params.status, "queued");
+	assert.equal(calls.at(-1).params.output.text, null);
+});
+
+test("reuses an existing no-version check token when logs are missing", async () => {
+	const calls = [];
+	const token = createPendingStateToken({
+		secret: "secret",
+		repositoryFullName: "octo-org/example",
+		prNumber: 42,
+		headSha: "abc123",
+		versionCreatedAt: "2026-05-01T12:00:00Z",
+		now: new Date("2026-05-01T12:00:00Z"),
+	});
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [
+							{
+								id: 7,
+								name: CUSTOM_CHECK_NAME,
+								status: "in_progress",
+								conclusion: null,
+								output: {
+									summary: "pending",
+									text: formatStateTokenMarker(token),
+								},
+							},
+						],
+					},
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/issues/{issue_number}/labels") {
+				return {
+					data: [{ name: "renovate-wait-3d" }],
+				};
+			}
+			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
+			title: "Update dependency example/dependency to v1.2.3",
+			body: "",
+			updated_at: "2026-04-28T12:00:00Z",
 			head: {
 				ref: "renovate/example",
 				sha: "abc123",
@@ -381,12 +543,12 @@ test("falls back to the current PR updated timestamp when release metadata canno
 	});
 
 	assert.equal(result.state, "pending");
-	assert.match(
-		result.summary,
-		/Waiting 3 full day\(s\) from release timestamp 2026-05-01T12:00:00.000Z/,
+	assert.equal(
+		calls.at(-1).route,
+		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
 	);
-	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
 	assert.equal(calls.at(-1).params.status, "in_progress");
+	assert.equal(calls.at(-1).params.output.text, formatStateTokenMarker(token));
 	assert.deepEqual(
 		decodePendingStateToken({
 			secret: "secret",
@@ -403,6 +565,92 @@ test("falls back to the current PR updated timestamp when release metadata canno
 	);
 });
 
+test("reuses a versioned token when Renovate logs are missing", async () => {
+	const calls = [];
+	const token = createPendingStateToken({
+		secret: "secret",
+		repositoryFullName: "octo-org/example",
+		prNumber: 42,
+		headSha: "abc123",
+		version: "1.2.3",
+		versionCreatedAt: "2026-04-30T12:00:00Z",
+		now: new Date("2026-04-30T12:00:00Z"),
+	});
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [
+							{
+								id: 7,
+								name: CUSTOM_CHECK_NAME,
+								status: "in_progress",
+								conclusion: null,
+								output: {
+									summary: "pending",
+									text: formatStateTokenMarker(token),
+								},
+							},
+						],
+					},
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/issues/{issue_number}/labels") {
+				return {
+					data: [{ name: "renovate-wait-3d" }],
+				};
+			}
+			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
+			title: "Update dependency example/dependency to v1.2.3",
+			body: "",
+			created_at: "2026-04-26T12:00:00Z",
+			head: {
+				ref: "renovate/example",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		now: new Date("2026-05-01T12:00:00Z"),
+	});
+
+	assert.equal(result.state, "pending");
+	assert.equal(
+		calls.at(-1).route,
+		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+	);
+	assert.equal(calls.at(-1).params.status, "in_progress");
+	assert.equal(calls.at(-1).params.output.text, formatStateTokenMarker(token));
+	assert.deepEqual(
+		decodePendingStateToken({
+			secret: "secret",
+			token: extractStateTokenMarker(calls.at(-1).params.output.text),
+		}),
+		{
+			repository_full_name: "octo-org/example",
+			pr_number: 42,
+			head_sha: "abc123",
+			version: "1.2.3",
+			version_created_at: "2026-04-30T12:00:00.000Z",
+			iat: 1777550400,
+		},
+	);
+});
+
 test("creates a fresh pending check when a completed success must be downgraded after label changes", async () => {
 	const calls = [];
 	const token = createPendingStateToken({
@@ -410,6 +658,7 @@ test("creates a fresh pending check when a completed success must be downgraded 
 		repositoryFullName: "octo-org/example",
 		prNumber: 42,
 		headSha: "abc123",
+		version: "1.2.3",
 		versionCreatedAt: "2026-04-30T12:00:00Z",
 	});
 	const github = {

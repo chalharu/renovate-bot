@@ -10,6 +10,8 @@ const STATE_TOKEN_MARKER_PREFIX = "<!-- custom-stability-days-jwt:";
 const STATE_TOKEN_MARKER_SUFFIX = " -->";
 const INITIAL_QUEUE_SUMMARY =
 	"Waiting for the Renovate follow-up workflow to resolve release metadata.";
+const NO_RELEASE_METADATA_SUMMARY =
+	"No release metadata was found in Renovate JSON logs or signed check-run state, and the PR updated timestamp is unavailable.";
 const BUILTIN_CHECK_SUMMARY =
 	"Renovate's built-in stability-days check exists on this commit.";
 const BUILTIN_CHECK_PENDING_SUMMARY =
@@ -170,6 +172,45 @@ const extractStateTokenMarker = (text = "") => {
 	const tokenStart = startIndex + STATE_TOKEN_MARKER_PREFIX.length;
 	const tokenEnd = String(text).indexOf(STATE_TOKEN_MARKER_SUFFIX, tokenStart);
 	return tokenEnd < 0 ? null : String(text).slice(tokenStart, tokenEnd);
+};
+
+const firstValidTimestamp = (...values) => {
+	for (const value of values) {
+		const timestamp = typeof value === "string" ? value.trim() : "";
+		if (timestamp.length > 0 && !Number.isNaN(new Date(timestamp).getTime())) {
+			return timestamp;
+		}
+	}
+
+	return "";
+};
+
+const normalizeReleaseMetadataRecord = (record) => {
+	const versionCreatedAt = firstValidTimestamp(
+		record?.releaseTimestamp,
+		record?.versionCreatedAt,
+		record?.version_created_at,
+		record?.updated_at,
+		record?.updatedAt,
+	);
+	const version =
+		typeof record?.newVersion === "string" &&
+		record.newVersion.trim().length > 0
+			? record.newVersion.trim()
+			: typeof record?.newValue === "string" &&
+					record.newValue.trim().length > 0
+				? record.newValue.trim()
+				: typeof record?.version === "string" &&
+						record.version.trim().length > 0
+					? record.version.trim()
+					: "";
+
+	return versionCreatedAt.length > 0 && version.length > 0
+		? {
+				version,
+				versionCreatedAt,
+			}
+		: null;
 };
 
 const parseWaitLabel = (label) => {
@@ -334,38 +375,20 @@ const collectLoggedBranchUpdates = ({
 						(!expectedLogContext || entry?.logContext === expectedLogContext),
 				)
 				.flatMap((entry) => entry.config.upgrades)
-				.filter(
-					(upgrade) =>
-						typeof upgrade?.releaseTimestamp === "string" &&
-						upgrade.releaseTimestamp.trim().length > 0 &&
-						!Number.isNaN(new Date(upgrade.releaseTimestamp).getTime()) &&
-						(typeof upgrade?.newVersion === "string" ||
-							typeof upgrade?.newValue === "string"),
-				)
-				.map((upgrade) => ({
-					versionCreatedAt: upgrade.releaseTimestamp,
-					version: String(upgrade.newVersion ?? upgrade.newValue).trim(),
-				})),
+				.map(normalizeReleaseMetadataRecord)
+				.filter(Boolean),
 		),
 	];
 };
 
-const selectLoggedBranchUpdate = ({
-	logEntries = [],
-	branchName,
-	expectedLogContext,
+const selectLatestReleaseMetadata = ({
+	updates = [],
+	missingReason = NO_RELEASE_METADATA_SUMMARY,
 } = {}) => {
-	const updates = collectLoggedBranchUpdates({
-		logEntries,
-		branchName,
-		expectedLogContext,
-	});
-
 	if (updates.length === 0) {
 		return {
 			ok: false,
-			reason:
-				"No releaseTimestamp metadata for this branch was found in the Renovate JSON logs.",
+			reason: missingReason,
 		};
 	}
 
@@ -381,6 +404,21 @@ const selectLoggedBranchUpdate = ({
 		versionCreatedAt: latestUpdate.versionCreatedAt,
 	};
 };
+
+const selectLoggedBranchUpdate = ({
+	logEntries = [],
+	branchName,
+	expectedLogContext,
+} = {}) =>
+	selectLatestReleaseMetadata({
+		updates: collectLoggedBranchUpdates({
+			logEntries,
+			branchName,
+			expectedLogContext,
+		}),
+		missingReason:
+			"No releaseTimestamp metadata for this branch was found in the Renovate JSON logs.",
+	});
 
 const findLatestCheckRun = ({ checkRuns = [], name } = {}) =>
 	[...(Array.isArray(checkRuns) ? checkRuns : [])]
@@ -437,26 +475,13 @@ const extractReusablePendingState = ({
 	};
 };
 
-const buildPrUpdatedAtFallback = ({ pullRequest } = {}) => {
-	const updatedAt = new Date(
-		pullRequest?.updated_at ?? pullRequest?.updatedAt ?? "",
-	);
-	if (Number.isNaN(updatedAt.getTime())) {
-		return {
-			ok: false,
-			reason:
-				"No releaseTimestamp metadata for this branch was found in the Renovate JSON logs, and the PR updated timestamp is unavailable.",
-		};
-	}
-	return {
-		ok: true,
-		version: null,
-		versionCreatedAt: updatedAt.toISOString(),
-		summary:
-			`No releaseTimestamp metadata for this branch was found in the Renovate JSON logs; ` +
-			`using PR updated timestamp ${updatedAt.toISOString()} as a conservative fallback.`,
-	};
-};
+const releaseMetadataMatchesPendingState = ({
+	pendingState,
+	releaseMetadata,
+}) =>
+	pendingState?.version === releaseMetadata?.version &&
+	new Date(pendingState?.versionCreatedAt).toISOString() ===
+		new Date(releaseMetadata?.versionCreatedAt).toISOString();
 
 const checkRunMatchesPlan = ({ checkRun, plan } = {}) => {
 	const expectedStatus =
@@ -508,6 +533,26 @@ const applyCheckPlan = async ({ github, owner, repo, checkRun, plan } = {}) => {
 		...buildCreateCheckPayload({ plan }),
 	});
 	return "created";
+};
+
+const buildPrUpdatedAtFallback = ({ pullRequest } = {}) => {
+	const updatedAt = new Date(
+		pullRequest?.updated_at ?? pullRequest?.updatedAt ?? "",
+	);
+	if (Number.isNaN(updatedAt.getTime())) {
+		return {
+			ok: false,
+			reason: NO_RELEASE_METADATA_SUMMARY,
+		};
+	}
+	return {
+		ok: true,
+		version: null,
+		versionCreatedAt: updatedAt.toISOString(),
+		summary:
+			`No releaseTimestamp metadata for this branch was found in the Renovate JSON logs; ` +
+			`using PR updated timestamp ${updatedAt.toISOString()} as a conservative fallback.`,
+	};
 };
 
 const processPullRequest = async ({
@@ -596,13 +641,23 @@ const processPullRequest = async ({
 		}
 
 		if (loggedUpdate.ok) {
-			if (pendingState?.version === loggedUpdate.version) {
+			const releaseMetadata = loggedUpdate;
+			const matchingState = releaseMetadataMatchesPendingState({
+				pendingState,
+				releaseMetadata,
+			})
+				? pendingState
+				: null;
+
+			if (matchingState) {
+				pendingState = matchingState;
 				loadLabelNames();
 			} else {
 				if (pendingState) {
 					logger.info?.(
 						`Refreshing pending state token for Renovate PR #${pullRequest.number}: ` +
-							`${pendingState.version ?? "unknown"} -> ${loggedUpdate.version}.`,
+							`${pendingState.version ?? "unknown"} @ ${pendingState.versionCreatedAt} -> ` +
+							`${releaseMetadata.version} @ ${releaseMetadata.versionCreatedAt}.`,
 					);
 				}
 				pendingState = {
@@ -611,12 +666,12 @@ const processPullRequest = async ({
 						repositoryFullName: `${owner}/${repo}`,
 						prNumber: pullRequest.number,
 						headSha: pullRequest.head.sha,
-						version: loggedUpdate.version,
-						versionCreatedAt: loggedUpdate.versionCreatedAt,
+						version: releaseMetadata.version,
+						versionCreatedAt: releaseMetadata.versionCreatedAt,
 						now,
 					}),
-					version: loggedUpdate.version,
-					versionCreatedAt: loggedUpdate.versionCreatedAt,
+					version: releaseMetadata.version,
+					versionCreatedAt: releaseMetadata.versionCreatedAt,
 				};
 				loadLabelNames();
 			}
@@ -753,6 +808,7 @@ module.exports = {
 	BUILTIN_CHECK_PENDING_SUMMARY,
 	CUSTOM_CHECK_NAME,
 	INITIAL_QUEUE_SUMMARY,
+	NO_RELEASE_METADATA_SUMMARY,
 	applyCheckPlan,
 	buildCheckOutput,
 	buildCreateCheckPayload,
@@ -767,6 +823,7 @@ module.exports = {
 	evaluateStability,
 	extractStateTokenMarker,
 	extractReusablePendingState,
+	firstValidTimestamp,
 	findLatestCheckRun,
 	fetchLabelNames,
 	formatStateTokenMarker,
