@@ -8,16 +8,13 @@ const {
 	NO_RELEASE_METADATA_SUMMARY,
 	createPendingStateToken,
 	decodePendingStateToken,
-	extractPrBodyStateTokenMarker,
 	extractStateTokenMarker,
 	extractReusablePendingState,
-	formatPrBodyStateTokenMarker,
 	formatStateTokenMarker,
 	parseRenovateJsonLogs,
 	processPullRequest,
 	processRepositoryRenovatePullRequests,
 	selectLoggedBranchUpdate,
-	upsertPrBodyStateTokenMarker,
 	waitDaysForLabels,
 } = require("./renovate-stability-days");
 
@@ -86,68 +83,23 @@ test("uses the most recent release timestamp for grouped renovate branches", () 
 	);
 });
 
-test("formats and extracts signed PR body state token markers", () => {
-	const marker = formatPrBodyStateTokenMarker("signed.jwt.token");
+test("uses updated_at from Renovate logs when releaseTimestamp is missing", () => {
+	const logEntries = parseRenovateJsonLogs(`
+{"logContext":"octo-org/example","msg":"processBranch()","config":{"branchName":"renovate/example","upgrades":[{"depName":"ghcr.io/example/dependency","newVersion":"1.2.3","updated_at":"2026-04-28T12:00:00Z"}]}}
+`);
 
-	assert.equal(
-		marker,
-		"<!-- custom-stability-days-pr-state-jwt:signed.jwt.token -->",
-	);
-	assert.equal(
-		extractPrBodyStateTokenMarker(`Human body\n\n${marker}\n`),
-		"signed.jwt.token",
-	);
-	assert.equal(extractPrBodyStateTokenMarker("no marker"), null);
-});
-
-test("upserts signed PR body state token markers", () => {
-	const existingBody = `Human body.
-
-<!-- custom-stability-days-pr-state-jwt:old.token -->`;
-	const malformedBody = `Human body.
-
-<!-- custom-stability-days-pr-state-jwt:broken.token
-Trailing Renovate content.`;
-	const repairedBody = upsertPrBodyStateTokenMarker({
-		body: malformedBody,
-		token: "new.token",
-	});
-
-	assert.equal(
-		upsertPrBodyStateTokenMarker({
-			body: "Human body.",
-			token: "new.token",
+	assert.deepEqual(
+		selectLoggedBranchUpdate({
+			logEntries,
+			branchName: "renovate/example",
+			expectedLogContext: "octo-org/example",
 		}),
-		`Human body.
-
-<!-- custom-stability-days-pr-state-jwt:new.token -->`,
+		{
+			ok: true,
+			version: "1.2.3",
+			versionCreatedAt: "2026-04-28T12:00:00Z",
+		},
 	);
-	assert.equal(
-		upsertPrBodyStateTokenMarker({
-			body: existingBody,
-			token: "new.token",
-		}),
-		`Human body.
-
-<!-- custom-stability-days-pr-state-jwt:new.token -->`,
-	);
-	assert.equal(
-		upsertPrBodyStateTokenMarker({
-			body: "",
-			token: "new.token",
-		}),
-		"<!-- custom-stability-days-pr-state-jwt:new.token -->",
-	);
-	assert.equal(
-		repairedBody,
-		`Human body.
-
-<!-- custom-stability-days-pr-state-jwt:broken.token
-Trailing Renovate content.
-
-<!-- custom-stability-days-pr-state-jwt:new.token -->`,
-	);
-	assert.equal(extractPrBodyStateTokenMarker(repairedBody), "new.token");
 });
 
 test("reuses a valid pending state token from the current custom check", () => {
@@ -215,9 +167,6 @@ test("reuses an existing pending token when Renovate metadata matches it", async
 				};
 			}
 			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
-				return { data: {} };
-			}
-			if (route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}") {
 				return { data: {} };
 			}
 
@@ -295,9 +244,6 @@ test("refreshes the pending token when Renovate metadata resolves to a different
 			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
 				return { data: {} };
 			}
-			if (route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}") {
-				return { data: {} };
-			}
 
 			throw new Error(`Unexpected route: ${route}`);
 		},
@@ -362,9 +308,6 @@ test("creates a fresh pending check from Renovate JSON logs on the first pass", 
 			if (route === "POST /repos/{owner}/{repo}/check-runs") {
 				return { data: {} };
 			}
-			if (route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}") {
-				return { data: {} };
-			}
 
 			throw new Error(`Unexpected route: ${route}`);
 		},
@@ -392,27 +335,12 @@ test("creates a fresh pending check from Renovate JSON logs on the first pass", 
 	});
 
 	assert.equal(result.state, "pending");
-	const prBodyPatch = calls.find(
-		({ route }) => route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
-	);
-	assert.ok(prBodyPatch);
-	assert.match(
-		prBodyPatch.params.body,
-		/<!-- custom-stability-days-pr-state-jwt:/,
-	);
-	assert.deepEqual(
-		decodePendingStateToken({
-			secret: "secret",
-			token: extractPrBodyStateTokenMarker(prBodyPatch.params.body),
-		}),
-		{
-			repository_full_name: "octo-org/example",
-			pr_number: 42,
-			head_sha: "abc123",
-			version: "1.2.3",
-			version_created_at: "2026-04-30T12:00:00.000Z",
-			iat: 1777636800,
-		},
+	assert.equal(
+		calls.some(
+			({ route }) =>
+				route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+		),
+		false,
 	);
 	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
 	assert.equal(calls.at(-1).params.status, "in_progress");
@@ -436,17 +364,8 @@ test("creates a fresh pending check from Renovate JSON logs on the first pass", 
 	);
 });
 
-test("uses signed PR body state when JSON logs are missing", async () => {
+test("uses PR updated_at fallback when JSON logs and check state are missing", async () => {
 	const calls = [];
-	const token = createPendingStateToken({
-		secret: "secret",
-		repositoryFullName: "octo-org/example",
-		prNumber: 42,
-		headSha: "abc123",
-		version: "1.2.3",
-		versionCreatedAt: "2026-04-28T12:00:00Z",
-		now: new Date("2026-04-28T12:00:00Z"),
-	});
 	const github = {
 		async request(route, params) {
 			calls.push({ route, params });
@@ -477,7 +396,8 @@ test("uses signed PR body state when JSON logs are missing", async () => {
 		pullRequest: {
 			number: 42,
 			title: "Update dependency example/dependency to v1.2.3",
-			body: formatPrBodyStateTokenMarker(token),
+			body: "",
+			updated_at: "2026-04-28T12:00:00Z",
 			head: {
 				ref: "renovate/example",
 				sha: "abc123",
@@ -495,7 +415,10 @@ test("uses signed PR body state when JSON logs are missing", async () => {
 	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
 	assert.equal(calls.at(-1).params.status, "completed");
 	assert.equal(calls.at(-1).params.conclusion, "success");
-	assert.equal(calls.at(-1).params.output.text, formatStateTokenMarker(token));
+	assert.match(
+		calls.at(-1).params.output.text,
+		/<!-- custom-stability-days-jwt:/,
+	);
 	assert.deepEqual(
 		decodePendingStateToken({
 			secret: "secret",
@@ -505,76 +428,14 @@ test("uses signed PR body state when JSON logs are missing", async () => {
 			repository_full_name: "octo-org/example",
 			pr_number: 42,
 			head_sha: "abc123",
-			version: "1.2.3",
+			version: undefined,
 			version_created_at: "2026-04-28T12:00:00.000Z",
-			iat: 1777377600,
+			iat: 1777636800,
 		},
 	);
 });
 
-test("ignores tampered signed PR body state and queues without other metadata", async () => {
-	const calls = [];
-	const warnings = [];
-	const token = createPendingStateToken({
-		secret: "secret",
-		repositoryFullName: "octo-org/example",
-		prNumber: 42,
-		headSha: "abc123",
-		version: "1.2.3",
-		versionCreatedAt: "2026-04-28T12:00:00Z",
-		now: new Date("2026-04-28T12:00:00Z"),
-	});
-	const github = {
-		async request(route, params) {
-			calls.push({ route, params });
-			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
-				return {
-					data: {
-						check_runs: [],
-					},
-				};
-			}
-			if (route === "POST /repos/{owner}/{repo}/check-runs") {
-				return { data: {} };
-			}
-
-			throw new Error(`Unexpected route: ${route}`);
-		},
-	};
-
-	const result = await processPullRequest({
-		github,
-		owner: "octo-org",
-		repo: "example",
-		pullRequest: {
-			number: 42,
-			title: "Update dependency example/dependency",
-			body: formatPrBodyStateTokenMarker(`${token}tampered`),
-			head: {
-				ref: "renovate/example",
-				sha: "abc123",
-			},
-		},
-		secret: "secret",
-		logger: {
-			warn(message) {
-				warnings.push(message);
-			},
-		},
-		now: new Date("2026-05-01T12:00:00Z"),
-	});
-
-	assert.equal(result.state, "queue");
-	assert.equal(result.summary, NO_RELEASE_METADATA_SUMMARY);
-	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
-	assert.equal(calls.at(-1).params.status, "queued");
-	assert.equal(calls.at(-1).params.output.text, null);
-	assert.equal(warnings.length, 2);
-	assert.match(warnings[0], /Ignoring signed PR body state/);
-	assert.match(warnings[1], /Keeping Renovate PR #42 queued/);
-});
-
-test("queues when logs, signed PR body state, and versioned tokens are missing", async () => {
+test("queues when logs, check state, and PR updated_at are missing", async () => {
 	const calls = [];
 	const github = {
 		async request(route, params) {
@@ -603,7 +464,6 @@ test("queues when logs, signed PR body state, and versioned tokens are missing",
 			title: "Update dependency example/dependency",
 			body: "",
 			created_at: "2026-04-28T12:00:00Z",
-			updated_at: "2026-05-01T12:00:00Z",
 			head: {
 				ref: "renovate/example",
 				sha: "abc123",
@@ -620,7 +480,7 @@ test("queues when logs, signed PR body state, and versioned tokens are missing",
 	assert.equal(calls.at(-1).params.output.text, null);
 });
 
-test("refreshes an existing no-version legacy token from signed PR body state", async () => {
+test("reuses an existing no-version check token when logs are missing", async () => {
 	const calls = [];
 	const token = createPendingStateToken({
 		secret: "secret",
@@ -629,15 +489,6 @@ test("refreshes an existing no-version legacy token from signed PR body state", 
 		headSha: "abc123",
 		versionCreatedAt: "2026-05-01T12:00:00Z",
 		now: new Date("2026-05-01T12:00:00Z"),
-	});
-	const prBodyToken = createPendingStateToken({
-		secret: "secret",
-		repositoryFullName: "octo-org/example",
-		prNumber: 42,
-		headSha: "abc123",
-		version: "1.2.3",
-		versionCreatedAt: "2026-04-28T12:00:00Z",
-		now: new Date("2026-04-28T12:00:00Z"),
 	});
 	const github = {
 		async request(route, params) {
@@ -680,7 +531,8 @@ test("refreshes an existing no-version legacy token from signed PR body state", 
 		pullRequest: {
 			number: 42,
 			title: "Update dependency example/dependency to v1.2.3",
-			body: formatPrBodyStateTokenMarker(prBodyToken),
+			body: "",
+			updated_at: "2026-04-28T12:00:00Z",
 			head: {
 				ref: "renovate/example",
 				sha: "abc123",
@@ -690,21 +542,13 @@ test("refreshes an existing no-version legacy token from signed PR body state", 
 		now: new Date("2026-05-01T12:00:00Z"),
 	});
 
-	assert.equal(result.state, "success");
+	assert.equal(result.state, "pending");
 	assert.equal(
 		calls.at(-1).route,
 		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
 	);
-	assert.equal(calls.at(-1).params.status, "completed");
-	assert.equal(calls.at(-1).params.conclusion, "success");
-	assert.notEqual(
-		calls.at(-1).params.output.text,
-		formatStateTokenMarker(token),
-	);
-	assert.equal(
-		calls.at(-1).params.output.text,
-		formatStateTokenMarker(prBodyToken),
-	);
+	assert.equal(calls.at(-1).params.status, "in_progress");
+	assert.equal(calls.at(-1).params.output.text, formatStateTokenMarker(token));
 	assert.deepEqual(
 		decodePendingStateToken({
 			secret: "secret",
@@ -714,9 +558,9 @@ test("refreshes an existing no-version legacy token from signed PR body state", 
 			repository_full_name: "octo-org/example",
 			pr_number: 42,
 			head_sha: "abc123",
-			version: "1.2.3",
-			version_created_at: "2026-04-28T12:00:00.000Z",
-			iat: 1777377600,
+			version: undefined,
+			version_created_at: "2026-05-01T12:00:00.000Z",
+			iat: 1777636800,
 		},
 	);
 });
