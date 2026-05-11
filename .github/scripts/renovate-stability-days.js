@@ -13,9 +13,9 @@ const INITIAL_QUEUE_SUMMARY =
 const NO_RELEASE_METADATA_SUMMARY =
 	"No release metadata was found in Renovate JSON logs or signed check-run state, and the PR updated timestamp is unavailable.";
 const BUILTIN_CHECK_SUMMARY =
-	"Renovate's built-in stability-days check exists on this commit.";
+	"Renovate's built-in stability-days check/status exists on this commit.";
 const BUILTIN_CHECK_PENDING_SUMMARY =
-	"Renovate's built-in stability-days check has not passed on this commit yet.";
+	"Renovate's built-in stability-days check/status has not passed on this commit yet.";
 
 const normalizeSharedSecret = (secret = "") => {
 	if (typeof secret !== "string") {
@@ -315,16 +315,24 @@ const buildEvaluationPlan = ({
 	text: formatStateTokenMarker(token),
 });
 
-const buildCheckOutput = ({ plan } = {}) => ({
-	title:
-		plan.state === "queue"
-			? "Waiting for release metadata"
-			: plan.state === "pending"
-				? "Stability waiting period"
-				: "Stability waiting period passed",
-	summary: plan.summary,
-	text: plan.text,
-});
+const buildCheckOutput = ({ plan } = {}) => {
+	const output = {
+		title:
+			plan.state === "queue"
+				? "Waiting for release metadata"
+				: plan.state === "pending"
+					? "Stability waiting period"
+					: "Stability waiting period passed",
+		summary: plan.summary,
+	};
+	if (plan.text == null) {
+		return output;
+	}
+	return {
+		...output,
+		text: plan.text,
+	};
+};
 
 const buildCreateCheckPayload = ({ plan } = {}) =>
 	plan.state === "success"
@@ -426,11 +434,28 @@ const findLatestCheckRun = ({ checkRuns = [], name } = {}) =>
 		.sort((left, right) => Number(right?.id ?? 0) - Number(left?.id ?? 0))[0] ??
 	null;
 
+const commitStatusTimestamp = (status) => {
+	const timestamp = new Date(status?.updated_at ?? status?.created_at ?? "");
+	return Number.isNaN(timestamp.getTime()) ? 0 : timestamp.getTime();
+};
+
+const findLatestCommitStatus = ({ statuses = [], context } = {}) =>
+	[...(Array.isArray(statuses) ? statuses : [])]
+		.filter((status) => status?.context === context)
+		.sort(
+			(left, right) =>
+				commitStatusTimestamp(right) - commitStatusTimestamp(left) ||
+				Number(right?.id ?? 0) - Number(left?.id ?? 0),
+		)[0] ?? null;
+
 const checkRunHasPassingConclusion = (checkRun) =>
 	checkRun?.status === "completed" &&
 	["success", "neutral", "skipped"].includes(
 		String(checkRun?.conclusion ?? "").toLowerCase(),
 	);
+
+const commitStatusHasPassingState = (status) =>
+	String(status?.state ?? "").toLowerCase() === "success";
 
 const validateTokenClaims = ({
 	claims,
@@ -601,6 +626,24 @@ const processPullRequest = async ({
 		}
 		return results;
 	})();
+	const commitStatuses = await (async () => {
+		if (!pullRequest?.statuses_url) {
+			return [];
+		}
+
+		const { data } = await github.request(
+			"GET /repos/{owner}/{repo}/commits/{ref}/status",
+			{
+				owner,
+				repo,
+				ref: pullRequest.head.sha,
+				headers: {
+					accept: "application/vnd.github+json",
+				},
+			},
+		);
+		return data?.statuses ?? [];
+	})();
 	const customCheckRun = findLatestCheckRun({
 		checkRuns,
 		name: CUSTOM_CHECK_NAME,
@@ -609,10 +652,18 @@ const processPullRequest = async ({
 		checkRuns,
 		name: BUILTIN_STABILITY_CHECK_NAME,
 	});
+	const builtInCommitStatus = findLatestCommitStatus({
+		statuses: commitStatuses,
+		context: BUILTIN_STABILITY_CHECK_NAME,
+	});
 
 	let plan;
 	if (builtInCheckRun) {
 		plan = checkRunHasPassingConclusion(builtInCheckRun)
+			? buildBuiltInSuccessPlan({ pullRequest })
+			: buildBuiltInPendingPlan({ pullRequest });
+	} else if (builtInCommitStatus) {
+		plan = commitStatusHasPassingState(builtInCommitStatus)
 			? buildBuiltInSuccessPlan({ pullRequest })
 			: buildBuiltInPendingPlan({ pullRequest });
 	} else {
@@ -816,6 +867,7 @@ module.exports = {
 	buildBuiltInPendingPlan,
 	buildQueuePlan,
 	checkRunHasPassingConclusion,
+	commitStatusHasPassingState,
 	collectLoggedBranchUpdates,
 	createPendingStateToken,
 	decodePendingStateToken,
@@ -824,6 +876,7 @@ module.exports = {
 	extractStateTokenMarker,
 	extractReusablePendingState,
 	firstValidTimestamp,
+	findLatestCommitStatus,
 	findLatestCheckRun,
 	fetchLabelNames,
 	formatStateTokenMarker,
