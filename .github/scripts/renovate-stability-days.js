@@ -13,9 +13,9 @@ const INITIAL_QUEUE_SUMMARY =
 const NO_RELEASE_METADATA_SUMMARY =
 	"No release metadata was found in Renovate JSON logs or signed check-run state, and the PR updated timestamp is unavailable.";
 const BUILTIN_CHECK_SUMMARY =
-	"Renovate's built-in stability-days check/status exists on this commit.";
+	"Renovate's built-in stability-days check exists on this commit.";
 const BUILTIN_CHECK_PENDING_SUMMARY =
-	"Renovate's built-in stability-days check/status has not passed on this commit yet.";
+	"Renovate's built-in stability-days check has not passed on this commit yet.";
 
 const normalizeSharedSecret = (secret = "") => {
 	if (typeof secret !== "string") {
@@ -426,28 +426,10 @@ const findLatestCheckRun = ({ checkRuns = [], name } = {}) =>
 		.sort((left, right) => Number(right?.id ?? 0) - Number(left?.id ?? 0))[0] ??
 	null;
 
-const findLatestCommitStatus = ({ statuses = [], context } = {}) =>
-	[...(Array.isArray(statuses) ? statuses : [])]
-		.filter((status) => status?.context === context)
-		.sort(
-			(left, right) =>
-				new Date(right?.updated_at ?? right?.created_at ?? "").getTime() -
-				new Date(left?.updated_at ?? left?.created_at ?? "").getTime(),
-		)[0] ?? null;
-
 const checkRunHasPassingConclusion = (checkRun) =>
 	checkRun?.status === "completed" &&
 	["success", "neutral", "skipped"].includes(
 		String(checkRun?.conclusion ?? "").toLowerCase(),
-	);
-
-const commitStatusHasPassingState = (status) =>
-	String(status?.state ?? "").toLowerCase() === "success";
-
-const builtInStabilityStatusHasPassed = ({ checkRun, commitStatus } = {}) =>
-	Boolean(
-		(checkRun && checkRunHasPassingConclusion(checkRun)) ||
-			(commitStatus && commitStatusHasPassingState(commitStatus)),
 	);
 
 const validateTokenClaims = ({
@@ -627,44 +609,10 @@ const processPullRequest = async ({
 		checkRuns,
 		name: BUILTIN_STABILITY_CHECK_NAME,
 	});
-	const commitStatuses = pullRequest?.statuses_url
-		? await (async () => {
-				const results = [];
-				for (let page = 1; ; page += 1) {
-					const { data } = await github.request(
-						"GET /repos/{owner}/{repo}/commits/{ref}/statuses",
-						{
-							owner,
-							repo,
-							ref: pullRequest.head.sha,
-							per_page: 100,
-							page,
-							headers: {
-								accept: "application/vnd.github+json",
-							},
-						},
-					);
-					const pageStatuses = data ?? [];
-					results.push(...pageStatuses);
-					if (pageStatuses.length < 100) {
-						break;
-					}
-				}
-				return results;
-			})()
-		: [];
-	const builtInCommitStatus = findLatestCommitStatus({
-		statuses: commitStatuses,
-		context: BUILTIN_STABILITY_CHECK_NAME,
-	});
-	const builtInStabilityStatus = builtInCheckRun ?? builtInCommitStatus;
 
 	let plan;
-	if (builtInStabilityStatus) {
-		plan = builtInStabilityStatusHasPassed({
-			checkRun: builtInCheckRun,
-			commitStatus: builtInCommitStatus,
-		})
+	if (builtInCheckRun) {
+		plan = checkRunHasPassingConclusion(builtInCheckRun)
 			? buildBuiltInSuccessPlan({ pullRequest })
 			: buildBuiltInPendingPlan({ pullRequest });
 	} else {
@@ -877,7 +825,6 @@ module.exports = {
 	extractReusablePendingState,
 	firstValidTimestamp,
 	findLatestCheckRun,
-	findLatestCommitStatus,
 	fetchLabelNames,
 	formatStateTokenMarker,
 	normalizeSharedSecret,
