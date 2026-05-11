@@ -477,7 +477,7 @@ test("queues when logs, check state, and PR updated_at are missing", async () =>
 	assert.equal(result.summary, NO_RELEASE_METADATA_SUMMARY);
 	assert.equal(calls.at(-1).route, "POST /repos/{owner}/{repo}/check-runs");
 	assert.equal(calls.at(-1).params.status, "queued");
-	assert.equal(calls.at(-1).params.output.text, null);
+	assert.ok(!("text" in calls.at(-1).params.output));
 });
 
 test("reuses an existing no-version check token when logs are missing", async () => {
@@ -776,12 +776,180 @@ test("short-circuits to success when the built-in renovate check exists", async 
 	});
 
 	assert.equal(result.state, "success");
-	assert.match(result.summary, /built-in stability-days check exists/);
+	assert.match(result.summary, /built-in stability-days check\/status exists/);
 	assert.equal(
 		calls.at(-1).route,
 		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
 	);
 	assert.equal(calls.at(-1).params.conclusion, "success");
+	assert.ok(!("text" in calls.at(-1).params.output));
+});
+
+test("short-circuits to success when the built-in renovate status context succeeds", async () => {
+	const calls = [];
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [
+							{
+								id: 10,
+								name: CUSTOM_CHECK_NAME,
+								status: "queued",
+								conclusion: null,
+								output: {
+									summary: INITIAL_QUEUE_SUMMARY,
+									text: null,
+								},
+							},
+						],
+					},
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/status") {
+				return {
+					data: {
+						statuses: [
+							{
+								id: 20,
+								context: BUILTIN_STABILITY_CHECK_NAME,
+								state: "pending",
+								description:
+									"Updates have not met minimum release age requirement",
+								updated_at: "2026-05-01T12:00:00Z",
+							},
+							{
+								id: 21,
+								context: BUILTIN_STABILITY_CHECK_NAME,
+								state: "success",
+								description: null,
+								updated_at: "2026-05-02T12:00:00Z",
+							},
+						],
+					},
+				};
+			}
+			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
+			title: "Update dependency example/dependency to v1.2.3",
+			body: "",
+			statuses_url:
+				"https://api.github.com/repos/octo-org/example/statuses/abc123",
+			head: {
+				ref: "renovate/example",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		now: new Date("2026-05-03T12:00:00Z"),
+	});
+
+	assert.equal(result.state, "success");
+	assert.match(result.summary, /built-in stability-days check\/status exists/);
+	assert.equal(
+		calls.at(-1).route,
+		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+	);
+	assert.equal(calls.at(-1).params.conclusion, "success");
+	assert.ok(!("text" in calls.at(-1).params.output));
+});
+
+test("prefers a built-in renovate check over a conflicting status context", async () => {
+	const calls = [];
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [
+							{
+								id: 11,
+								name: BUILTIN_STABILITY_CHECK_NAME,
+								status: "in_progress",
+								conclusion: null,
+								output: {
+									summary: "builtin pending",
+									text: null,
+								},
+							},
+							{
+								id: 10,
+								name: CUSTOM_CHECK_NAME,
+								status: "queued",
+								conclusion: null,
+								output: {
+									summary: INITIAL_QUEUE_SUMMARY,
+									text: null,
+								},
+							},
+						],
+					},
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/status") {
+				return {
+					data: {
+						statuses: [
+							{
+								id: 20,
+								context: BUILTIN_STABILITY_CHECK_NAME,
+								state: "success",
+								description: null,
+								updated_at: "2026-05-02T12:00:00Z",
+							},
+						],
+					},
+				};
+			}
+			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
+			title: "Update dependency example/dependency to v1.2.3",
+			body: "",
+			statuses_url:
+				"https://api.github.com/repos/octo-org/example/statuses/abc123",
+			head: {
+				ref: "renovate/example",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		now: new Date("2026-05-03T12:00:00Z"),
+	});
+
+	assert.equal(result.state, "pending");
+	assert.equal(
+		calls.at(-1).route,
+		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+	);
+	assert.equal(calls.at(-1).params.status, "in_progress");
+	assert.ok(!("text" in calls.at(-1).params.output));
 });
 
 test("keeps the custom check pending while the built-in renovate check is still pending", async () => {
@@ -848,6 +1016,81 @@ test("keeps the custom check pending while the built-in renovate check is still 
 		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
 	);
 	assert.equal(calls.at(-1).params.status, "in_progress");
+	assert.ok(!("text" in calls.at(-1).params.output));
+});
+
+test("keeps the custom check pending while the built-in renovate status context is still pending", async () => {
+	const calls = [];
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [
+							{
+								id: 10,
+								name: CUSTOM_CHECK_NAME,
+								status: "queued",
+								conclusion: null,
+								output: {
+									summary: INITIAL_QUEUE_SUMMARY,
+									text: null,
+								},
+							},
+						],
+					},
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/status") {
+				return {
+					data: {
+						statuses: [
+							{
+								id: 20,
+								context: BUILTIN_STABILITY_CHECK_NAME,
+								state: "pending",
+								description: null,
+								updated_at: "2026-05-02T12:00:00Z",
+							},
+						],
+					},
+				};
+			}
+			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
+			title: "Update dependency example/dependency to v1.2.3",
+			body: "",
+			statuses_url:
+				"https://api.github.com/repos/octo-org/example/statuses/abc123",
+			head: {
+				ref: "renovate/example",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		now: new Date("2026-05-03T12:00:00Z"),
+	});
+
+	assert.equal(result.state, "pending");
+	assert.equal(
+		calls.at(-1).route,
+		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+	);
+	assert.equal(calls.at(-1).params.status, "in_progress");
+	assert.ok(!("text" in calls.at(-1).params.output));
 });
 
 test("paginates check-run lookups until it finds relevant built-in checks", async () => {

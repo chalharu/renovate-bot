@@ -38,9 +38,9 @@ const INITIAL_QUEUE_SUMMARY =
 const INVALID_METADATA_SUMMARY =
 	"Pending state metadata could not be validated; waiting for the Renovate follow-up workflow to refresh it.";
 const BUILTIN_CHECK_SUMMARY =
-	"Renovate's built-in stability-days check exists on this commit.";
+	"Renovate's built-in stability-days check/status exists on this commit.";
 const BUILTIN_CHECK_PENDING_SUMMARY =
-	"Renovate's built-in stability-days check has not passed on this commit yet.";
+	"Renovate's built-in stability-days check/status has not passed on this commit yet.";
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
@@ -261,14 +261,30 @@ async function reevaluateCheckRun(
 		target.headSha,
 		installationToken,
 	);
+	const commitStatuses = await listCommitStatuses(
+		target.repositoryFullName,
+		target.headSha,
+		installationToken,
+	);
 
 	const existingCheckRun = findLatestCheckRun(checkRuns, CHECK_NAME);
 
-	// If the built-in Renovate stability-days check exists, mirror its state.
+	// If the built-in Renovate stability-days check/status exists, mirror its state.
 	const builtInCheckRun = findLatestCheckRun(checkRuns, BUILTIN_CHECK_NAME);
+	const builtInCommitStatus = findLatestCommitStatus(
+		commitStatuses,
+		BUILTIN_CHECK_NAME,
+	);
 
 	if (builtInCheckRun) {
 		const plan = checkRunHasPassingConclusion(builtInCheckRun)
+			? builtinSuccessPlan(target, BUILTIN_CHECK_SUMMARY)
+			: builtinPendingPlan(target);
+		return { plan, existingCheckRun };
+	}
+
+	if (builtInCommitStatus) {
+		const plan = commitStatusHasPassingState(builtInCommitStatus)
 			? builtinSuccessPlan(target, BUILTIN_CHECK_SUMMARY)
 			: builtinPendingPlan(target);
 		return { plan, existingCheckRun };
@@ -385,13 +401,17 @@ function checkRunMatchesPlan(checkRun: CheckRun, plan: CheckRunPlan): boolean {
 	);
 }
 
-function checkRunHasPassingConclusion(checkRun: CheckRun): boolean {
+function checkRunHasPassingConclusion(checkRun: CheckRun | null): boolean {
 	return (
-		checkRun.status === "completed" &&
+		checkRun?.status === "completed" &&
 		["success", "neutral", "skipped"].includes(
-			String(checkRun.conclusion ?? "").toLowerCase(),
+			String(checkRun?.conclusion ?? "").toLowerCase(),
 		)
 	);
+}
+
+function commitStatusHasPassingState(status: CommitStatus | null): boolean {
+	return String(status?.state ?? "").toLowerCase() === "success";
 }
 
 function builtinPendingPlan(target: CheckRunTarget): CheckRunPlan {
@@ -434,6 +454,35 @@ function findLatestCheckRun(
 	return latest;
 }
 
+function findLatestCommitStatus(
+	statuses: CommitStatus[],
+	context: string,
+): CommitStatus | null {
+	let latest: CommitStatus | null = null;
+	for (const status of statuses) {
+		if (status.context !== context) continue;
+		if (!latest || compareCommitStatuses(status, latest) > 0) {
+			latest = status;
+		}
+	}
+	return latest;
+}
+
+function compareCommitStatuses(
+	left: CommitStatus,
+	right: CommitStatus,
+): number {
+	const timestampDelta =
+		commitStatusTimestamp(left) - commitStatusTimestamp(right);
+	if (timestampDelta !== 0) return timestampDelta;
+	return (left.id ?? 0) - (right.id ?? 0);
+}
+
+function commitStatusTimestamp(status: CommitStatus): number {
+	const timestamp = new Date(status.updated_at ?? status.created_at ?? "");
+	return Number.isNaN(timestamp.getTime()) ? 0 : timestamp.getTime();
+}
+
 async function listCheckRuns(
 	repositoryFullName: string,
 	headSha: string,
@@ -454,6 +503,19 @@ async function listCheckRuns(
 		if (pageRuns.length < CHECK_RUNS_PAGE_SIZE) break;
 	}
 	return all;
+}
+
+async function listCommitStatuses(
+	repositoryFullName: string,
+	headSha: string,
+	installationToken: string,
+): Promise<CommitStatus[]> {
+	const combinedStatus = await githubJsonRequest<{ statuses?: CommitStatus[] }>(
+		"GET",
+		`${GITHUB_API_BASE}/repos/${repositoryFullName}/commits/${headSha}/status`,
+		installationToken,
+	);
+	return combinedStatus.statuses ?? [];
 }
 
 async function getIssueLabels(
@@ -531,4 +593,13 @@ interface CheckRun {
 	status: string;
 	conclusion: string | null;
 	output: { summary: string; text?: string | null } | null;
+}
+
+interface CommitStatus {
+	id?: number;
+	context: string;
+	state: string;
+	created_at?: string;
+	updated_at?: string;
+	description?: string | null;
 }

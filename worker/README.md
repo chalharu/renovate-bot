@@ -45,8 +45,9 @@ Cloudflare Workers 向け TypeScript Worker が入っています。
 `version_created_at` です。待機期間が終わるまでは check は
 `in_progress`、終わったら `completed` + `success` になります。
 
-GitHub が同じ head SHA に対して組み込みの `renovate/stability-days` check を
-持っている場合は、その結果を優先します。組み込み check が成功済みなら
+GitHub が同じ head SHA に対して組み込みの `renovate/stability-days` を
+持っている場合は、その結果を優先します。Renovate はこの結果を CheckRun または
+commit StatusContext として出すことがあります。組み込み check/status が成功済みなら
 custom check も success、まだ完了していなければ custom check も pending のままです。
 
 ## release metadata の扱い
@@ -86,9 +87,9 @@ Worker が利用する変数・シークレット:
   HS256 shared secret を兼ねる秘密鍵
 - `GITHUB_APP_WEBHOOK_SECRET`: `X-Hub-Signature-256` 検証用シークレット
 
-GitHub App には、対象リポジトリの installation 情報を読める権限と、
-Checks を更新できる権限が必要です。Renovate 後続 workflow 側にも同じ
-秘密鍵を `PRIVATE_KEY` として渡し、互換性のある pending-state JWT を
+GitHub App には、対象リポジトリの installation 情報を読める権限、Checks を
+更新できる権限、Commit statuses を読める権限が必要です。Renovate 後続 workflow
+側にも同じ秘密鍵を `PRIVATE_KEY` として渡し、互換性のある pending-state JWT を
 生成できるようにしてください。
 
 ## ローカル検証
