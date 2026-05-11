@@ -38,9 +38,9 @@ const INITIAL_QUEUE_SUMMARY =
 const INVALID_METADATA_SUMMARY =
 	"Pending state metadata could not be validated; waiting for the Renovate follow-up workflow to refresh it.";
 const BUILTIN_CHECK_SUMMARY =
-	"Renovate's built-in stability-days check exists on this commit.";
+	"Renovate's built-in stability-days check/status exists on this commit.";
 const BUILTIN_CHECK_PENDING_SUMMARY =
-	"Renovate's built-in stability-days check has not passed on this commit yet.";
+	"Renovate's built-in stability-days check/status has not passed on this commit yet.";
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
@@ -261,14 +261,26 @@ async function reevaluateCheckRun(
 		target.headSha,
 		installationToken,
 	);
+	const commitStatuses = await listCommitStatuses(
+		target.repositoryFullName,
+		target.headSha,
+		installationToken,
+	);
 
 	const existingCheckRun = findLatestCheckRun(checkRuns, CHECK_NAME);
 
-	// If the built-in Renovate stability-days check exists, mirror its state.
+	// If the built-in Renovate stability-days check/status exists, mirror it.
 	const builtInCheckRun = findLatestCheckRun(checkRuns, BUILTIN_CHECK_NAME);
+	const builtInCommitStatus = findLatestCommitStatus(
+		commitStatuses,
+		BUILTIN_CHECK_NAME,
+	);
 
-	if (builtInCheckRun) {
-		const plan = checkRunHasPassingConclusion(builtInCheckRun)
+	if (builtInCheckRun || builtInCommitStatus) {
+		const plan = builtInStabilityStatusHasPassed(
+			builtInCheckRun,
+			builtInCommitStatus,
+		)
 			? builtinSuccessPlan(target, BUILTIN_CHECK_SUMMARY)
 			: builtinPendingPlan(target);
 		return { plan, existingCheckRun };
@@ -394,6 +406,20 @@ function checkRunHasPassingConclusion(checkRun: CheckRun): boolean {
 	);
 }
 
+function commitStatusHasPassingState(status: CommitStatus): boolean {
+	return status.state.toLowerCase() === "success";
+}
+
+function builtInStabilityStatusHasPassed(
+	checkRun: CheckRun | null,
+	commitStatus: CommitStatus | null,
+): boolean {
+	return Boolean(
+		(checkRun && checkRunHasPassingConclusion(checkRun)) ||
+			(commitStatus && commitStatusHasPassingState(commitStatus)),
+	);
+}
+
 function builtinPendingPlan(target: CheckRunTarget): CheckRunPlan {
 	return {
 		repositoryFullName: target.repositoryFullName,
@@ -434,6 +460,24 @@ function findLatestCheckRun(
 	return latest;
 }
 
+function findLatestCommitStatus(
+	statuses: CommitStatus[],
+	context: string,
+): CommitStatus | null {
+	let latest: CommitStatus | null = null;
+	for (const status of statuses) {
+		if (status.context !== context) continue;
+		if (
+			!latest ||
+			new Date(status.updated_at ?? status.created_at).getTime() >
+				new Date(latest.updated_at ?? latest.created_at).getTime()
+		) {
+			latest = status;
+		}
+	}
+	return latest;
+}
+
 async function listCheckRuns(
 	repositoryFullName: string,
 	headSha: string,
@@ -452,6 +496,28 @@ async function listCheckRuns(
 		const pageRuns = response.check_runs ?? [];
 		all.push(...pageRuns);
 		if (pageRuns.length < CHECK_RUNS_PAGE_SIZE) break;
+	}
+	return all;
+}
+
+async function listCommitStatuses(
+	repositoryFullName: string,
+	headSha: string,
+	installationToken: string,
+): Promise<CommitStatus[]> {
+	const all: CommitStatus[] = [];
+	for (let page = 1; ; page++) {
+		const url =
+			`${GITHUB_API_BASE}/repos/${repositoryFullName}/commits/${headSha}/statuses` +
+			`?per_page=${CHECK_RUNS_PAGE_SIZE}&page=${page}`;
+		const pageStatuses =
+			(await githubJsonRequest<CommitStatus[]>(
+				"GET",
+				url,
+				installationToken,
+			)) ?? [];
+		all.push(...pageStatuses);
+		if (pageStatuses.length < CHECK_RUNS_PAGE_SIZE) break;
 	}
 	return all;
 }
@@ -531,4 +597,11 @@ interface CheckRun {
 	status: string;
 	conclusion: string | null;
 	output: { summary: string; text?: string | null } | null;
+}
+
+interface CommitStatus {
+	context: string;
+	state: string;
+	created_at: string;
+	updated_at?: string;
 }
