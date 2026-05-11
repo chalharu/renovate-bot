@@ -776,12 +776,84 @@ test("short-circuits to success when the built-in renovate check exists", async 
 	});
 
 	assert.equal(result.state, "success");
-	assert.match(result.summary, /built-in stability-days check exists/);
+	assert.match(result.summary, /built-in stability-days check\/status exists/);
 	assert.equal(
 		calls.at(-1).route,
 		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
 	);
 	assert.equal(calls.at(-1).params.conclusion, "success");
+});
+
+test("short-circuits to success when the built-in renovate status context exists", async () => {
+	const calls = [];
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [
+							{
+								id: 10,
+								name: CUSTOM_CHECK_NAME,
+								status: "in_progress",
+								conclusion: null,
+								output: {
+									summary: "pending",
+									text: null,
+								},
+							},
+						],
+					},
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/statuses") {
+				return {
+					data: [
+						{
+							context: BUILTIN_STABILITY_CHECK_NAME,
+							state: "success",
+							created_at: "2026-05-08T18:00:41Z",
+							updated_at: "2026-05-08T18:00:41Z",
+						},
+					],
+				};
+			}
+			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
+			title: "Update dependency wrangler to v4.88.0",
+			body: "",
+			statuses_url:
+				"https://api.github.com/repos/octo-org/example/statuses/abc123",
+			head: {
+				ref: "renovate/wrangler-4.88.x",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		now: new Date("2026-05-11T02:27:44Z"),
+	});
+
+	assert.equal(result.state, "success");
+	assert.match(result.summary, /built-in stability-days check\/status exists/);
+	assert.equal(
+		calls.at(-1).route,
+		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+	);
+	assert.equal(calls.at(-1).params.conclusion, "success");
+	assert.equal(calls.at(-1).params.output.text, null);
 });
 
 test("keeps the custom check pending while the built-in renovate check is still pending", async () => {
@@ -848,6 +920,77 @@ test("keeps the custom check pending while the built-in renovate check is still 
 		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
 	);
 	assert.equal(calls.at(-1).params.status, "in_progress");
+});
+
+test("keeps the custom check pending while the built-in renovate status context is pending", async () => {
+	const calls = [];
+	const github = {
+		async request(route, params) {
+			calls.push({ route, params });
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+				return {
+					data: {
+						check_runs: [
+							{
+								id: 10,
+								name: CUSTOM_CHECK_NAME,
+								status: "queued",
+								conclusion: null,
+								output: {
+									summary: INITIAL_QUEUE_SUMMARY,
+									text: null,
+								},
+							},
+						],
+					},
+				};
+			}
+			if (route === "GET /repos/{owner}/{repo}/commits/{ref}/statuses") {
+				return {
+					data: [
+						{
+							context: BUILTIN_STABILITY_CHECK_NAME,
+							state: "pending",
+							created_at: "2026-05-08T11:41:24Z",
+							updated_at: "2026-05-08T11:41:24Z",
+						},
+					],
+				};
+			}
+			if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+				return { data: {} };
+			}
+
+			throw new Error(`Unexpected route: ${route}`);
+		},
+	};
+
+	const result = await processPullRequest({
+		github,
+		owner: "octo-org",
+		repo: "example",
+		pullRequest: {
+			number: 42,
+			title: "Update dependency wrangler to v4.88.0",
+			body: "",
+			statuses_url:
+				"https://api.github.com/repos/octo-org/example/statuses/abc123",
+			head: {
+				ref: "renovate/wrangler-4.88.x",
+				sha: "abc123",
+			},
+		},
+		secret: "secret",
+		now: new Date("2026-05-08T11:42:00Z"),
+	});
+
+	assert.equal(result.state, "pending");
+	assert.equal(
+		calls.at(-1).route,
+		"PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+	);
+	assert.equal(calls.at(-1).params.status, "in_progress");
+	assert.equal(calls.at(-1).params.output.text, null);
 });
 
 test("paginates check-run lookups until it finds relevant built-in checks", async () => {

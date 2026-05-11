@@ -45,9 +45,10 @@ Cloudflare Workers 向け TypeScript Worker が入っています。
 `version_created_at` です。待機期間が終わるまでは check は
 `in_progress`、終わったら `completed` + `success` になります。
 
-GitHub が同じ head SHA に対して組み込みの `renovate/stability-days` check を
-持っている場合は、その結果を優先します。組み込み check が成功済みなら
-custom check も success、まだ完了していなければ custom check も pending のままです。
+GitHub が同じ head SHA に対して組み込みの `renovate/stability-days` check または
+status context を持っている場合は、その結果を優先します。組み込み check/status が
+成功済みなら custom check も success、まだ完了していなければ custom check も
+pending のままです。
 
 ## release metadata の扱い
 
@@ -66,6 +67,10 @@ check run にも metadata が無い場合は、PR の `updated_at` / `updatedAt`
 `version_created_at` を生成して署名済み JWT として custom check に保存します。
 PR の `created_at` は release timestamp として使いません。どの経路でも
 `version_created_at` を作れない場合だけ check は queued のままになります。
+
+ただし、Renovate 自身の `renovate/stability-days` が check run ではなく commit
+status として出る場合があります。その場合も Renovate の判定結果を優先し、status が
+success なら custom check も success にします。
 
 1 本の Renovate ブランチに複数更新が含まれる場合は、ログ中で最も新しい
 `releaseTimestamp` を採用します。これにより、まとめられた更新のうち最も若い
