@@ -58,7 +58,7 @@ JWT は custom check の `output.text` に次の形式で保存します。
 <!-- custom-stability-days-jwt:... -->
 ```
 
-Renovate 後続 workflow は `RENOVATE_LOG_CONTEXT` を使って対象リポジトリの
+Renovate 後続 workflow は Renovate logging variable の `LOG_CONTEXT` を使って対象リポジトリの
 JSON ログを評価し、Renovate 自身が解決した `releaseTimestamp` を最優先で
 使います。`releaseTimestamp` が無く `updated_at` / `updatedAt` がログにある場合は、
 それを `version_created_at` として使います。ログから metadata を取得できない場合は、

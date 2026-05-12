@@ -468,15 +468,22 @@ test("passes Renovate JSON logs through the GitHub Action container", () => {
 	);
 
 	assert.equal(
-		workflow.match(/RENOVATE_LOG_FILE:\s*\/tmp\/renovate-log\.jsonl/g)?.length,
+		workflow.match(/^\s+LOG_FILE:\s*\/tmp\/renovate-log\.jsonl/gm)?.length,
 		2,
 	);
 	assert.match(workflow, /docker-volumes:\s*\/tmp:\/tmp(?:\s|$)/);
-	assert.match(workflow, /RENOVATE_LOG_FILE_FORMAT:\s*json(?:\s|$)/);
-	assert.match(workflow, /RENOVATE_LOG_FILE_LEVEL:\s*trace(?:\s|$)/);
-	assert.doesNotMatch(workflow, /^\s+LOG_FILE:/m);
-	assert.doesNotMatch(workflow, /^\s+LOG_FILE_FORMAT:/m);
-	assert.doesNotMatch(workflow, /^\s+LOG_FILE_LEVEL:/m);
+	assert.match(workflow, /env-regex: >-/);
+	assert.match(
+		workflow,
+		/\|LOG_CONTEXT\|LOG_FILE\|LOG_FILE_FORMAT\|LOG_FILE_LEVEL\|LOG_LEVEL\|/,
+	);
+	assert.match(workflow, /^\s+LOG_CONTEXT:\s*>-/m);
+	assert.match(workflow, /^\s+LOG_FILE_FORMAT:\s*json(?:\s|$)/m);
+	assert.match(workflow, /^\s+LOG_FILE_LEVEL:\s*trace(?:\s|$)/m);
+	assert.doesNotMatch(workflow, /^\s+RENOVATE_LOG_CONTEXT:/m);
+	assert.doesNotMatch(workflow, /^\s+RENOVATE_LOG_FILE:/m);
+	assert.doesNotMatch(workflow, /^\s+RENOVATE_LOG_FILE_FORMAT:/m);
+	assert.doesNotMatch(workflow, /^\s+RENOVATE_LOG_FILE_LEVEL:/m);
 });
 
 test("builds a mixed repository matrix without exposing private repository names", () => {
