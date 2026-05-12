@@ -28,8 +28,8 @@ Cloudflare Workers 向け TypeScript Worker が入っています。
 1. `opened` / `reopened` / `synchronize` で、現在の head SHA に対して
    `queued` の custom check を作成または更新します。
 2. Renovate 後続 workflow が open な `renovate/*` PR を走査し、
-   Renovate JSON ログまたは PR の `updated_at` から `version_created_at` を含む
-   HS256 JWT を生成します。
+   Renovate JSON ログ、既存 check state、または PR の `updated_at` から
+   `version_created_at` を含む HS256 JWT を生成します。
 3. その JWT を custom check の `output.text` に HTML コメントとして埋め込み、
    check を `in_progress` または `completed` に進めます。
 4. その後の `labeled` / `unlabeled` では Worker が現在のラベルを取得し、
@@ -58,15 +58,16 @@ JWT は custom check の `output.text` に次の形式で保存します。
 <!-- custom-stability-days-jwt:... -->
 ```
 
-Renovate 後続 workflow は `RENOVATE_LOG_CONTEXT` を使って対象リポジトリの
+Renovate 後続 workflow は Renovate logging variable の `LOG_CONTEXT` を使って対象リポジトリの
 JSON ログを評価し、Renovate 自身が解決した `releaseTimestamp` を最優先で
 使います。`releaseTimestamp` が無く `updated_at` / `updatedAt` がログにある場合は、
 それを `version_created_at` として使います。ログから metadata を取得できない場合は、
-既存 check run の署名済み JWT の `version_created_at` を再利用します。ログにも
-check run にも metadata が無い場合は、PR の `updated_at` / `updatedAt` から
+現在の head SHA の check run、または PR の force-push timeline に残る過去 head SHA の
+custom check run から、署名済み JWT の `version_created_at` を再利用します。過去 head
+SHA から再利用する場合は、同じ `version_created_at` を現 head SHA 用に再署名して保存します。
+ログにも check run にも metadata が無い場合だけ、PR の `updated_at` / `updatedAt` から
 `version_created_at` を生成して署名済み JWT として custom check に保存します。
-PR の `created_at` は release timestamp として使いません。どの経路でも
-`version_created_at` を作れない場合だけ check は queued のままになります。
+どの経路でも `version_created_at` を作れない場合だけ check は queued のままになります。
 
 1 本の Renovate ブランチに複数更新が含まれる場合は、ログ中で最も新しい
 `releaseTimestamp` を採用します。これにより、まとめられた更新のうち最も若い

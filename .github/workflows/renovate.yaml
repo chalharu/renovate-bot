@@ -1,3 +1,4 @@
+# yamllint disable rule:comments rule:document-start rule:line-length
 name: Renovate
 'on':
   workflow_dispatch:
@@ -265,6 +266,9 @@ jobs:
         with:
           # Managed by Renovate via renovate.json customManagers.
           configurationFile: renovate.json
+          docker-volumes: /tmp:/tmp
+          env-regex: >-
+            ^(?:RENOVATE_\w+|LOG_CONTEXT|LOG_FILE|LOG_FILE_FORMAT|LOG_FILE_LEVEL|LOG_LEVEL|GITHUB_COM_TOKEN|NODE_OPTIONS|NO_COLOR|(?:HTTPS?|NO)_PROXY|(?:https?|no)_proxy)$
           renovate-version: 43.165.2
           token: '${{ steps.get_token.outputs.token }}'
         env:
@@ -274,13 +278,11 @@ jobs:
             ${{ steps.resolve_repository.outputs.full_name }}
           RENOVATE_ONBOARDING: "false"
           RENOVATE_PLATFORM_COMMIT: "true"
-          RENOVATE_LOG_CONTEXT: >-
-            ${{ steps.resolve_repository.outputs.full_name }}
           RENOVATE_HOST_RULES: >-
             [{"matchHost":"dhi.io","hostType":"docker","username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}]
           LOG_CONTEXT: >-
             ${{ steps.resolve_repository.outputs.full_name }}
-          LOG_FILE: ${{ runner.temp }}/renovate-log.jsonl
+          LOG_FILE: /tmp/renovate-log.jsonl
           LOG_FILE_FORMAT: json
           LOG_FILE_LEVEL: trace
           LOG_LEVEL: ${{ steps.resolve_repository.outputs.log_level }}
@@ -290,9 +292,9 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEFAULT_WAIT_DAYS: "3"
-          RENOVATE_LOG_CONTEXT: >-
+          LOG_CONTEXT: >-
             ${{ steps.resolve_repository.outputs.full_name }}
-          RENOVATE_LOG_FILE: ${{ runner.temp }}/renovate-log.jsonl
+          LOG_FILE: /tmp/renovate-log.jsonl
           REPOSITORY_NAME: ${{ steps.resolve_repository.outputs.repository }}
           REPOSITORY_OWNER: ${{ steps.resolve_repository.outputs.owner }}
           SHARED_SECRET: ${{ secrets.PRIVATE_KEY }}
@@ -314,8 +316,8 @@ jobs:
               owner: process.env.REPOSITORY_OWNER,
               repo: process.env.REPOSITORY_NAME,
               secret: process.env.SHARED_SECRET,
-              renovateLogFile: process.env.RENOVATE_LOG_FILE,
-              expectedLogContext: process.env.RENOVATE_LOG_CONTEXT,
+              renovateLogFile: process.env.LOG_FILE,
+              expectedLogContext: process.env.LOG_CONTEXT,
               defaultWaitDays: Number.parseInt(
                 process.env.DEFAULT_WAIT_DAYS ?? "3",
                 10,

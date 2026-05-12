@@ -461,6 +461,31 @@ test("requests write access for commit statuses in the Renovate workflow", () =>
 	assert.doesNotMatch(workflow, /permission-statuses:\s*read(?:\s|$)/);
 });
 
+test("passes Renovate JSON logs through the GitHub Action container", () => {
+	const workflow = fs.readFileSync(
+		path.join(__dirname, "../workflows/renovate.yaml"),
+		"utf8",
+	);
+
+	assert.equal(
+		workflow.match(/^\s+LOG_FILE:\s*\/tmp\/renovate-log\.jsonl/gm)?.length,
+		2,
+	);
+	assert.match(workflow, /docker-volumes:\s*\/tmp:\/tmp(?:\s|$)/);
+	assert.match(workflow, /env-regex: >-/);
+	assert.match(
+		workflow,
+		/\|LOG_CONTEXT\|LOG_FILE\|LOG_FILE_FORMAT\|LOG_FILE_LEVEL\|LOG_LEVEL\|/,
+	);
+	assert.match(workflow, /^\s+LOG_CONTEXT:\s*>-/m);
+	assert.match(workflow, /^\s+LOG_FILE_FORMAT:\s*json(?:\s|$)/m);
+	assert.match(workflow, /^\s+LOG_FILE_LEVEL:\s*trace(?:\s|$)/m);
+	assert.doesNotMatch(workflow, /^\s+RENOVATE_LOG_CONTEXT:/m);
+	assert.doesNotMatch(workflow, /^\s+RENOVATE_LOG_FILE:/m);
+	assert.doesNotMatch(workflow, /^\s+RENOVATE_LOG_FILE_FORMAT:/m);
+	assert.doesNotMatch(workflow, /^\s+RENOVATE_LOG_FILE_LEVEL:/m);
+});
+
 test("builds a mixed repository matrix without exposing private repository names", () => {
 	const matrix = buildRepositoryMatrix({
 		repositories: [

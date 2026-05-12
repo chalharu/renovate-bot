@@ -16,6 +16,9 @@ const BUILTIN_CHECK_SUMMARY =
 	"Renovate's built-in stability-days check/status exists on this commit.";
 const BUILTIN_CHECK_PENDING_SUMMARY =
 	"Renovate's built-in stability-days check/status has not passed on this commit yet.";
+const CHECK_RUNS_PAGE_SIZE = 100;
+const TIMELINE_PAGE_SIZE = 100;
+const HISTORICAL_CHECK_COMMIT_LIMIT = 100;
 
 const normalizeSharedSecret = (secret = "") => {
 	if (typeof secret !== "string") {
@@ -508,6 +511,18 @@ const releaseMetadataMatchesPendingState = ({
 	new Date(pendingState?.versionCreatedAt).toISOString() ===
 		new Date(releaseMetadata?.versionCreatedAt).toISOString();
 
+const normalizeVersionValue = (value) => {
+	const version = typeof value === "string" ? value.trim() : "";
+	return version.replace(/^v(?=\d)/i, "");
+};
+
+const extractTitleVersion = ({ pullRequest } = {}) => {
+	const title = typeof pullRequest?.title === "string" ? pullRequest.title : "";
+	const match = title.match(/\bto\s+([^\s,;)]+)/i);
+	const version = normalizeVersionValue(match?.[1]);
+	return version.length > 0 ? version : null;
+};
+
 const checkRunMatchesPlan = ({ checkRun, plan } = {}) => {
 	const expectedStatus =
 		plan.state === "queue"
@@ -560,6 +575,247 @@ const applyCheckPlan = async ({ github, owner, repo, checkRun, plan } = {}) => {
 	return "created";
 };
 
+const fetchCheckRunsForRef = async ({ github, owner, repo, ref } = {}) => {
+	const results = [];
+	for (let page = 1; ; page += 1) {
+		const { data } = await github.request(
+			"GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+			{
+				owner,
+				repo,
+				ref,
+				per_page: CHECK_RUNS_PAGE_SIZE,
+				page,
+				headers: {
+					accept: "application/vnd.github+json",
+				},
+			},
+		);
+		const pageCheckRuns = data?.check_runs ?? [];
+		results.push(...pageCheckRuns);
+		if (pageCheckRuns.length < CHECK_RUNS_PAGE_SIZE) {
+			break;
+		}
+	}
+	return results;
+};
+
+const fetchPullRequestTimelineCommitIds = async ({
+	github,
+	owner,
+	repo,
+	issueNumber,
+} = {}) => {
+	const commitIds = [];
+	const seen = new Set();
+	for (let page = 1; ; page += 1) {
+		const { data } = await github.request(
+			"GET /repos/{owner}/{repo}/issues/{issue_number}/timeline",
+			{
+				owner,
+				repo,
+				issue_number: issueNumber,
+				per_page: TIMELINE_PAGE_SIZE,
+				page,
+				headers: {
+					accept: "application/vnd.github.mocking-bird-preview+json",
+				},
+			},
+		);
+		const timelineEvents = Array.isArray(data) ? data : [];
+		for (const event of timelineEvents) {
+			const commitId =
+				event?.event === "head_ref_force_pushed" &&
+				typeof event?.commit_id === "string"
+					? event.commit_id.trim()
+					: "";
+			if (/^[0-9a-f]{40}$/i.test(commitId) && !seen.has(commitId)) {
+				seen.add(commitId);
+				commitIds.push(commitId);
+				if (commitIds.length >= HISTORICAL_CHECK_COMMIT_LIMIT) {
+					return commitIds;
+				}
+			}
+		}
+		if (timelineEvents.length < TIMELINE_PAGE_SIZE) {
+			break;
+		}
+	}
+	return commitIds;
+};
+
+const pendingStateTimestamp = (pendingState) => {
+	const timestamp = new Date(pendingState?.versionCreatedAt ?? "");
+	return Number.isNaN(timestamp.getTime())
+		? Number.POSITIVE_INFINITY
+		: timestamp.getTime();
+};
+
+const shouldPreferHistoricalPendingState = ({
+	historicalState,
+	pendingState,
+} = {}) => {
+	if (!historicalState) {
+		return false;
+	}
+	if (!pendingState) {
+		return true;
+	}
+	const historicalVersion = normalizeVersionValue(historicalState.version);
+	const pendingVersion = normalizeVersionValue(pendingState.version);
+	if (
+		historicalVersion.length > 0 &&
+		pendingVersion.length > 0 &&
+		historicalVersion !== pendingVersion
+	) {
+		return false;
+	}
+	return (
+		pendingStateTimestamp(historicalState) < pendingStateTimestamp(pendingState)
+	);
+};
+
+const reissuePendingState = ({
+	pendingState,
+	secret,
+	repositoryFullName,
+	prNumber,
+	headSha,
+	now,
+} = {}) => ({
+	token: createPendingStateToken({
+		secret,
+		repositoryFullName,
+		prNumber,
+		headSha,
+		version: pendingState.version,
+		versionCreatedAt: pendingState.versionCreatedAt,
+		now,
+	}),
+	version: pendingState.version,
+	versionCreatedAt: pendingState.versionCreatedAt,
+});
+
+const compareHistoricalStateCandidates = (left, right) =>
+	pendingStateTimestamp(left) - pendingStateTimestamp(right) ||
+	left.timelineIndex - right.timelineIndex ||
+	Number(left.checkRunId ?? 0) - Number(right.checkRunId ?? 0);
+
+const selectHistoricalPendingState = ({
+	historicalStates = [],
+	pendingState,
+	currentVersion,
+} = {}) => {
+	const candidates = historicalStates.filter((historicalState) =>
+		shouldPreferHistoricalPendingState({
+			historicalState,
+			pendingState,
+		}),
+	);
+	if (candidates.length === 0) {
+		return null;
+	}
+
+	const desiredVersion = normalizeVersionValue(
+		pendingState?.version ?? currentVersion ?? "",
+	);
+	const compatibleCandidates =
+		desiredVersion.length > 0
+			? (() => {
+					const matchingVersionCandidates = candidates.filter(
+						(candidate) =>
+							normalizeVersionValue(candidate.version) === desiredVersion,
+					);
+					return matchingVersionCandidates.length > 0
+						? matchingVersionCandidates
+						: candidates.filter(
+								(candidate) =>
+									normalizeVersionValue(candidate.version).length === 0,
+							);
+				})()
+			: (() => {
+					const knownVersions = new Set(
+						candidates
+							.map((candidate) => normalizeVersionValue(candidate.version))
+							.filter((version) => version.length > 0),
+					);
+					return knownVersions.size > 1
+						? candidates.filter(
+								(candidate) =>
+									normalizeVersionValue(candidate.version).length === 0,
+							)
+						: candidates;
+				})();
+
+	return (
+		[...compatibleCandidates].sort(compareHistoricalStateCandidates)[0] ?? null
+	);
+};
+
+const findHistoricalPendingState = async ({
+	github,
+	owner,
+	repo,
+	pullRequest,
+	secret,
+	logger = { warn() {} },
+} = {}) => {
+	const commitIds = await fetchPullRequestTimelineCommitIds({
+		github,
+		owner,
+		repo,
+		issueNumber: pullRequest.number,
+	});
+	const historicalStates = [];
+	for (const [timelineIndex, commitId] of commitIds.entries()) {
+		if (commitId === pullRequest?.head?.sha) {
+			continue;
+		}
+
+		const checkRuns = await fetchCheckRunsForRef({
+			github,
+			owner,
+			repo,
+			ref: commitId,
+		});
+		const customCheckRuns = checkRuns
+			.filter((checkRun) => checkRun?.name === CUSTOM_CHECK_NAME)
+			.sort((left, right) => Number(right?.id ?? 0) - Number(left?.id ?? 0));
+
+		for (const checkRun of customCheckRuns) {
+			if (!checkRun?.output?.text) {
+				continue;
+			}
+
+			try {
+				const historicalState = extractReusablePendingState({
+					checkRun,
+					secret,
+					repositoryFullName: `${owner}/${repo}`,
+					prNumber: pullRequest.number,
+					headSha: checkRun.head_sha ?? commitId,
+				});
+				if (historicalState) {
+					historicalStates.push({
+						...historicalState,
+						checkRunId: checkRun.id,
+						timelineIndex,
+					});
+				}
+			} catch (error) {
+				logger.warn?.(
+					`Ignoring historical pending state for Renovate PR #${pullRequest.number} on ${commitId}: ${error?.message ?? error}`,
+				);
+			}
+		}
+	}
+	return selectHistoricalPendingState({
+		historicalStates,
+		pendingState: null,
+		currentVersion: extractTitleVersion({ pullRequest }),
+	});
+};
+
 const buildPrUpdatedAtFallback = ({ pullRequest } = {}) => {
 	const updatedAt = new Date(
 		pullRequest?.updated_at ?? pullRequest?.updatedAt ?? "",
@@ -602,30 +858,12 @@ const processPullRequest = async ({
 		});
 		return labelsPromise;
 	};
-	const checkRuns = await (async () => {
-		const results = [];
-		for (let page = 1; ; page += 1) {
-			const { data } = await github.request(
-				"GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
-				{
-					owner,
-					repo,
-					ref: pullRequest.head.sha,
-					per_page: 100,
-					page,
-					headers: {
-						accept: "application/vnd.github+json",
-					},
-				},
-			);
-			const pageCheckRuns = data?.check_runs ?? [];
-			results.push(...pageCheckRuns);
-			if (pageCheckRuns.length < 100) {
-				break;
-			}
-		}
-		return results;
-	})();
+	const checkRuns = await fetchCheckRunsForRef({
+		github,
+		owner,
+		repo,
+		ref: pullRequest.head.sha,
+	});
 	const commitStatuses = await (async () => {
 		if (!pullRequest?.statuses_url) {
 			return [];
@@ -688,6 +926,37 @@ const processPullRequest = async ({
 					`Ignoring reusable pending state for Renovate PR #${pullRequest.number}: ${error?.message ?? error}`,
 				);
 				pendingState = null;
+			}
+		}
+
+		if (!loggedUpdate.ok && (!pendingState || pendingState.version == null)) {
+			const historicalState = await findHistoricalPendingState({
+				github,
+				owner,
+				repo,
+				pullRequest,
+				secret,
+				logger,
+			});
+			if (
+				shouldPreferHistoricalPendingState({
+					historicalState,
+					pendingState,
+				})
+			) {
+				logger.warn?.(
+					`Reusing historical embedded pending state for Renovate PR #${pullRequest.number}: ` +
+						`${historicalState.versionCreatedAt}; current check state was ` +
+						`${pendingState?.versionCreatedAt ?? "missing"}.`,
+				);
+				pendingState = reissuePendingState({
+					pendingState: historicalState,
+					secret,
+					repositoryFullName: `${owner}/${repo}`,
+					prNumber: pullRequest.number,
+					headSha: pullRequest.head.sha,
+					now,
+				});
 			}
 		}
 
@@ -866,6 +1135,7 @@ module.exports = {
 	buildEvaluationPlan,
 	buildBuiltInPendingPlan,
 	buildQueuePlan,
+	buildPrUpdatedAtFallback,
 	checkRunHasPassingConclusion,
 	commitStatusHasPassingState,
 	collectLoggedBranchUpdates,
