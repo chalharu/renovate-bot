@@ -461,6 +461,29 @@ test("requests write access for commit statuses in the Renovate workflow", () =>
 	assert.doesNotMatch(workflow, /permission-statuses:\s*read(?:\s|$)/);
 });
 
+test("retries transient GitHub API failures in Renovate workflow script steps", () => {
+	const workflow = fs.readFileSync(
+		path.join(__dirname, "../workflows/renovate.yaml"),
+		"utf8",
+	);
+	const githubScriptStepBlocks = workflow
+		.split(/\n(?=\s+- name: )/)
+		.filter((block) => block.includes("uses: actions/github-script@"));
+	const githubScriptUseCount =
+		workflow.match(/^\s+uses:\s*actions\/github-script@/gm)?.length ?? 0;
+
+	assert.equal(githubScriptUseCount, 4);
+	assert.equal(githubScriptStepBlocks.length, 4);
+	assert.equal(githubScriptStepBlocks.length, githubScriptUseCount);
+	for (const block of githubScriptStepBlocks) {
+		assert.match(block, /^\s+retries:\s*3$/m);
+		assert.match(
+			block,
+			/^\s+retry-exempt-status-codes:\s*400,401,403,404,422$/m,
+		);
+	}
+});
+
 test("passes Renovate JSON logs through the GitHub Action container", () => {
 	const workflow = fs.readFileSync(
 		path.join(__dirname, "../workflows/renovate.yaml"),
