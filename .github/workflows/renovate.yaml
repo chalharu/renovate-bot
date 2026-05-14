@@ -268,7 +268,7 @@ jobs:
           REPOSITORY_OWNER: ${{ steps.resolve_repository.outputs.owner }}
           REPOSITORY_PRIVATE: ${{ steps.resolve_repository.outputs.private }}
       - name: Self-hosted Renovate
-        uses: renovatebot/github-action@f66d8679fcfcfa051abde6e7a623007173bf5164 # v46.1.12
+        uses: renovatebot/github-action@693b9ef15eec82123529a37c782242f091365961 # v46.1.14
         with:
           # Managed by Renovate via renovate.json customManagers.
           configurationFile: renovate.json
