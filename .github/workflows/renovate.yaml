@@ -275,7 +275,7 @@ jobs:
           docker-volumes: /tmp:/tmp
           env-regex: >-
             ^(?:RENOVATE_\w+|LOG_CONTEXT|LOG_FILE|LOG_FILE_FORMAT|LOG_FILE_LEVEL|LOG_LEVEL|GITHUB_COM_TOKEN|NODE_OPTIONS|NO_COLOR|(?:HTTPS?|NO)_PROXY|(?:https?|no)_proxy)$
-          renovate-version: 43.182.4
+          renovate-version: 43.183.2
           token: '${{ steps.get_token.outputs.token }}'
         env:
           RENOVATE_AUTODISCOVER: "false"
