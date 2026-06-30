@@ -1,4 +1,8 @@
 rules:
+  github-app:
+    ignore:
+      - renovate.yaml:30:11
+      - renovate.yaml:120:11
   secrets-outside-env:
     config:
       allow:
