@@ -21,7 +21,7 @@ jobs:
   build:
     permissions:
       contents: read
-    uses: chalharu/workflows/.github/workflows/renovate-ci.yaml@b38333d680878a2156ff25b255cf7174c9a3a065 # main
+    uses: chalharu/workflows/.github/workflows/renovate-ci.yaml@cc2f639ff68d2e470c9b627a7a780fab409141ad # main
   workflow_helper_regression:
     name: Workflow helper regression
     runs-on: ubuntu-latest
