@@ -1586,6 +1586,56 @@ test("processes only renovate pull requests when scanning a repository", async (
 	);
 });
 
+test("skips reconciliation when pull requests are disabled for the repository", async () => {
+	const warnings = [];
+	const github = {
+		async paginate() {
+			const error = new Error("Not Found");
+			error.status = 404;
+			throw error;
+		},
+	};
+
+	const results = await processRepositoryRenovatePullRequests({
+		github,
+		owner: "octo-org",
+		repo: "pulls-disabled",
+		secret: "secret",
+		now: new Date("2026-05-01T12:00:00Z"),
+		logger: {
+			warn(message) {
+				warnings.push(message);
+			},
+		},
+	});
+
+	assert.deepEqual(results, []);
+	assert.equal(warnings.length, 1);
+	assert.match(
+		warnings[0],
+		/Pull requests are disabled or inaccessible for octo-org\/pulls-disabled/,
+	);
+});
+
+test("rethrows non-404 failures when listing repository pull requests", async () => {
+	const github = {
+		async paginate() {
+			throw new Error("Unexpected failure");
+		},
+	};
+
+	await assert.rejects(
+		processRepositoryRenovatePullRequests({
+			github,
+			owner: "octo-org",
+			repo: "example",
+			secret: "secret",
+			now: new Date("2026-05-01T12:00:00Z"),
+		}),
+		/Unexpected failure/,
+	);
+});
+
 test("warns when a reusable pending token can no longer be decoded", async () => {
 	const warnings = [];
 	const github = {

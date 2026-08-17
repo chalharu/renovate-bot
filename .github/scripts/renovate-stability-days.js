@@ -1087,15 +1087,29 @@ const processRepositoryRenovatePullRequests = async ({
 		);
 	}
 
-	const pullRequests = await github.paginate(
-		"GET /repos/{owner}/{repo}/pulls",
-		{
-			owner,
-			repo,
-			state: "open",
-			per_page: 100,
-		},
-	);
+	let pullRequests;
+	try {
+		pullRequests = await github.paginate(
+			"GET /repos/{owner}/{repo}/pulls",
+			{
+				owner,
+				repo,
+				state: "open",
+				per_page: 100,
+			},
+		);
+	} catch (error) {
+		if (error?.status !== 404) {
+			throw error;
+		}
+
+		effectiveLogger.warn?.(
+			`Pull requests are disabled or inaccessible for ${owner}/${repo}; ` +
+				`skipping custom stability-days check reconciliation ` +
+				`(status: ${error?.status ?? "unknown"}).`,
+		);
+		return [];
+	}
 	const renovatePullRequests = pullRequests.filter((pullRequest) =>
 		String(pullRequest?.head?.ref ?? "").startsWith("renovate/"),
 	);
