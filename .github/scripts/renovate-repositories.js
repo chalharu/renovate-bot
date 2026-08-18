@@ -101,6 +101,13 @@ const inspectRepositoryCandidate = ({ repository, owner } = {}) => {
 		};
 	}
 
+	if (repository?.has_pull_requests === false) {
+		return {
+			candidate: false,
+			reason: "pull requests are disabled in the repository",
+		};
+	}
+
 	return {
 		candidate: true,
 		reason: "repository is active for the workflow owner",

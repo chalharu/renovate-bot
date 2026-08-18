@@ -58,16 +58,26 @@ test("filters to non-archived repositories for the current owner and sorts them"
 				archived: true,
 				disabled: false,
 			},
-			{
-				id: 4,
-				name: "external",
-				full_name: "another-org/external",
-				owner: { login: "another-org" },
-				archived: false,
-				disabled: false,
-			},
-		],
-	});
+{
+			id: 4,
+			name: "external",
+			full_name: "another-org/external",
+			owner: { login: "another-org" },
+			archived: false,
+			disabled: false,
+		},
+		{
+			id: 5,
+			name: "pulls-disabled",
+			full_name: "octo-org/pulls-disabled",
+			owner: { login: "octo-org" },
+			archived: false,
+			disabled: false,
+			has_issues: true,
+			has_pull_requests: false,
+		},
+	],
+});
 
 	assert.deepEqual(
 		filteredRepositories.map((repository) => repository.full_name),
@@ -89,6 +99,24 @@ test("inspects candidate repositories with explicit skip reasons", () => {
 		{
 			candidate: false,
 			reason: "repository is archived",
+		},
+	);
+
+	assert.deepEqual(
+		inspectRepositoryCandidate({
+			owner: "octo-org",
+			repository: {
+				full_name: "octo-org/pulls-disabled",
+				owner: { login: "octo-org" },
+				archived: false,
+				disabled: false,
+				has_issues: true,
+				has_pull_requests: false,
+			},
+		}),
+		{
+			candidate: false,
+			reason: "pull requests are disabled in the repository",
 		},
 	);
 });
