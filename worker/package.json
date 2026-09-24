@@ -9,7 +9,7 @@
 	"devDependencies": {
 		"@cloudflare/workers-types": "5.20260904.1",
 		"@types/node": "25.9.8",
-		"tsx": "4.23.13",
+		"tsx": "4.23.15",
 		"typescript": "7.0.2",
 		"wrangler": "4.129.0"
 	}
